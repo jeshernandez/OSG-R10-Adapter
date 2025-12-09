@@ -1,6 +1,6 @@
-# gsp-r10-adapter
+# OSG-R10-Adapter
 
-Utility to bridge R10 launch monitor to GSPro. Supports the following
+Utility to bridge R10 launch monitor to GSPro and OpenShotGolf (OSG). Supports the following
   - An "E6 Connect" compatible server for use with the Launch Monitor's E6 integration
   - Direct bluetooth connection to R10
   - Webcam putting integration with https://github.com/alleexx/cam-putting-py
@@ -41,5 +41,7 @@ In order to use the putting integration you must
 
 ### From Source
 
-- Install a dotnet 7 sdk if you don't have one already
+- Install a dotnet 9 sdk if you don't have one already
 - `dotnet run` from project directory
+- You can force the simulator target with `dotnet run -- --sim gspro` or `dotnet run -- --sim osg` (the `--` separates app args from dotnet)
+- Without the flag, the simulator is inferred from `openConnect.port` in `settings.json` (`49152` => OpenShotGolf, `921` => GSPro)
