@@ -2,13 +2,14 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using gspro_r10.OpenConnect;
 using Microsoft.Extensions.Configuration;
+using System.Collections.Generic;
 
 namespace gspro_r10
 {
   public class ConnectionManager: IDisposable
   {
     private R10ConnectionServer? R10Server;
-    private OpenConnectClient OpenConnectClient;
+    private List<IOpenConnectClient> OpenConnectClients = new List<IOpenConnectClient>();
     private BluetoothConnection? BluetoothConnection { get; }
     internal HttpPuttingServer? PuttingConnection { get; }
     public event ClubChangedEventHandler? ClubChanged;
@@ -25,11 +26,18 @@ namespace gspro_r10
 
     private int shotNumber = 0;
     private bool disposedValue;
+    private readonly SimulatorType? simulatorOverride;
 
-    public ConnectionManager(IConfigurationRoot configuration)
+    public ConnectionManager(IConfigurationRoot configuration, SimulatorType? simulatorOverride = null)
     {
-      OpenConnectClient = new OpenConnectClient(this, configuration.GetSection("openConnect"));
-      OpenConnectClient.ConnectAsync();
+      this.simulatorOverride = simulatorOverride;
+      AddOpenConnectClient(configuration.GetSection("openConnect"));
+
+      IConfigurationSection secondaryOpenConnect = configuration.GetSection("secondaryOpenConnect");
+      if (bool.Parse(secondaryOpenConnect["enabled"] ?? "false"))
+      {
+        AddOpenConnectClient(secondaryOpenConnect);
+      }
 
       if (bool.Parse(configuration.GetSection("r10E6Server")["enabled"] ?? "false"))
       {
@@ -47,6 +55,37 @@ namespace gspro_r10
       }
     }
 
+    private void AddOpenConnectClient(IConfigurationSection configurationSection)
+    {
+      SimulatorType simulator = DetermineSimulator(configurationSection);
+      IOpenConnectClient client = simulator switch
+      {
+        SimulatorType.OpenShotGolf => new OpenShotGolfClient(this, configurationSection),
+        _ => new OpenConnectClient(this, configurationSection)
+      };
+
+      OpenConnectClients.Add(client);
+      client.ConnectAsync();
+      BaseLogger.LogMessage($"Configured {simulator} connection to {(configurationSection["ip"] ?? "127.0.0.1")}:{configurationSection["port"]}", "Main");
+    }
+
+    private SimulatorType DetermineSimulator(IConfigurationSection configurationSection)
+    {
+      if (simulatorOverride.HasValue)
+        return simulatorOverride.Value;
+
+      if (int.TryParse(configurationSection["port"], out int port))
+      {
+        if (port == 49152)
+          return SimulatorType.OpenShotGolf;
+        if (port == 921)
+          return SimulatorType.GSPro;
+      }
+
+      // Default to GSPro if unrecognized
+      return SimulatorType.GSPro;
+    }
+
     internal void SendShot(OpenConnect.BallData? ballData, OpenConnect.ClubData? clubData)
     {
       string openConnectMessage = JsonSerializer.Serialize(OpenConnectApiMessage.CreateShotData(
@@ -55,7 +94,7 @@ namespace gspro_r10
         clubData
       ), serializerSettings);
 
-      OpenConnectClient.SendAsync(openConnectMessage);
+      OpenConnectClients.ForEach(client => client.SendAsync(openConnectMessage));
     }
 
     public void ClubUpdate(Club club)
@@ -71,7 +110,7 @@ namespace gspro_r10
 
     internal void SendLaunchMonitorReadyUpdate(bool deviceReady)
     {
-      OpenConnectClient.SetDeviceReady(deviceReady);
+      OpenConnectClients.ForEach(client => client.SetDeviceReady(deviceReady));
     }
 
     protected virtual void Dispose(bool disposing)
@@ -83,8 +122,10 @@ namespace gspro_r10
           R10Server?.Dispose();
           PuttingConnection?.Dispose();
           BluetoothConnection?.Dispose();
-          OpenConnectClient?.DisconnectAndStop();
-          OpenConnectClient?.Dispose();
+          OpenConnectClients.ForEach(client => {
+            client?.DisconnectAndStop();
+            client?.Dispose();
+          });
         }
         disposedValue = true;
       }

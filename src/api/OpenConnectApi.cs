@@ -4,7 +4,7 @@ namespace gspro_r10.OpenConnect
 {
   public class OpenConnectApiMessage
   {
-    public string DeviceID { get { return "GSPRO-R10"; } }
+    public string DeviceID { get { return "Garmin-R10"; } }
     public string Units { get { return "Yards"; } }
     public int ShotNumber { get; set; }
     public string APIVersion { get { return "1"; } }

@@ -1,7 +1,7 @@
 {
   "openConnect": {
     "ip": "127.0.0.1",
-    "port": 921
+    "port": 49152
   },
   "r10E6Server": {
     "enabled": true,
