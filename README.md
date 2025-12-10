@@ -21,7 +21,20 @@ The goal of this project was to provide an ultra lightweight alterntive to the c
 
 - `bluetooth.provider`: choose `windows` or `linux` (defaults to the host OS if left blank). Windows uses the WinRT-based connector; the Linux path is being migrated to a BlueZ-backed provider.
 - `bluetoothDeviceName` / `bluetoothDeviceAddress`: name or MAC of the R10. If Linux/BlueZ reports only the MAC, set `bluetoothDeviceAddress` (e.g. `F4:9D:AA:D0:05:05`).
+- `bluetoothAdapterName`: (Linux) optionally pin the adapter to use (for example `hci0`) if you have more than one controller.
 - Adjust altitude, tee distance, temperature, etc. in `settings.json` as before.
+
+### Garmin R10 GATT reference
+
+When the device is paired/trusted, the firmware exposes the following services:
+- Standard: `00001800` (Generic Access), `00001801` (Generic Attribute), `0000180A` (Device Info), `0000180F` (Battery), `0000FE1F` (E6 transport shim)
+- Proprietary interface service `6A4E2800-667B-11E3-949A-0800200C9A66` (used for the protobuf transport and handshake)
+- Measurement/control/status service `6A4E3400-667B-11E3-949A-0800200C9A66`, which contains the characteristics we subscribe to:
+  - Measurement notifications `6A4E3401-667B-11E3-949A-0800200C9A66`
+  - Control point `6A4E3402-667B-11E3-949A-0800200C9A66`
+  - Status `6A4E3403-667B-11E3-949A-0800200C9A66`
+
+The adapter code mirrors the Garmin workflow: it subscribes to those characteristics (measurement → control → status) and then runs the interface-service handshake implemented in `LaunchMonitorDevice.Setup()`. On Linux you must pair/trust the R10 first (e.g., via `bluetoothctl`) so BlueZ exposes these services.
 
 ## Using Direct Bluetooth Connector
 
@@ -30,8 +43,9 @@ In order to use the direct bluetooth connection to the R10 you must
 - Edit `settings.json` to reflect your desired altitude, tee distance, temperature, etc.
 - If your OS reports the R10 as its MAC address instead of "Approach R10", set `bluetoothDeviceAddress` (e.g. `F4:9D:AA:D0:05:05`) in `settings.json`
 - Set device in pairing mode (blue blinking light) by holding power button for few seconds
-- **Pair the R10 from the windows bluetooth settings**
+- **Pair the R10 through your OS bluetooth settings**
   - On windows 11 you may need to set "Bluetooth Device Discovery" to `advanced`
+  - On Linux, use `bluetoothctl` (`default-agent`, `scan on`, `pair <MAC>`, `trust <MAC>`) before starting the bridge
   - This step only needs to be done once
   - You may need to disable bluetooth on previously paired devices to prevent them from stealing the connection
 

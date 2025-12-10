@@ -12,6 +12,7 @@
     "bluetoothDeviceName": "Approach R10",
     "provider": "linux", // set to 'windows' or 'linux' (defaults to OS if blank)
     "bluetoothDeviceAddress": "F49DAAD00505", // optional mac address fallback if the OS only exposes the address as the name
+    "bluetoothAdapterName": "", // optional adapter name on linux (e.g. hci0)
     "reconnectInterval": 10, // seconds
     "sendStatusChangesToGSP": false, // send device readiness updates to gsp (does nothing as of today)
     "autoWake": true, // wake device if falls asleep

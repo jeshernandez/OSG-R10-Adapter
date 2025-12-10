@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Google.Protobuf;
-using InTheHand.Bluetooth;
+using gspro_r10.bluetooth.adapters;
 using LaunchMonitor.Proto;
 using static LaunchMonitor.Proto.State.Types;
 using static LaunchMonitor.Proto.SubscribeResponse.Types;
@@ -67,53 +67,14 @@ namespace gspro_r10.bluetooth
       public Metrics? Metrics { get; set; }
     }
 
-    public LaunchMonitorDevice(BluetoothDevice device) : base(device)
+    public LaunchMonitorDevice(IBluetoothDeviceAdapter device) : base(device)
     {
 
     }
 
     public override bool Setup()
     {
-      if (DebugLogging)
-        BaseLogger.LogDebug("Subscribing to measurement service");
-      GattService measService = Device.Gatt.GetPrimaryServiceAsync(MEASUREMENT_SERVICE_UUID).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      GattCharacteristic measCharacteristic = measService.GetCharacteristicAsync(MEASUREMENT_CHARACTERISTIC_UUID).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      if (!measCharacteristic.StartNotificationsAsync().Wait(TimeSpan.FromSeconds(5)))
-      {
-        BluetoothLogger.Error("Error subscribing to measurement characteristic");
-      }
-
-      // Bytes that come after each shot. No idea how to parse these
-      measCharacteristic.CharacteristicValueChanged += (o, e) => {};
-      if (DebugLogging)
-        BaseLogger.LogDebug("Subscribing to control service");
-      GattCharacteristic controlPoint = measService.GetCharacteristicAsync(CONTROL_POINT_CHARACTERISTIC_UUID).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      if (!controlPoint.StartNotificationsAsync().Wait(TimeSpan.FromSeconds(5)))
-      {
-        BluetoothLogger.Error("Error subscribing to the control characteristic");
-      }
-      // Response to waiting device through controlPointInterface. Unused for now
-      controlPoint.CharacteristicValueChanged += (o, e) => { };
-
-      if (DebugLogging)
-        BaseLogger.LogDebug("Subscribing to status service");
-      GattCharacteristic statusCharacteristic = measService.GetCharacteristicAsync(STATUS_CHARACTERISTIC_UUID).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      if (!statusCharacteristic.StartNotificationsAsync().Wait(TimeSpan.FromSeconds(5)))
-      {
-        BluetoothLogger.Error("Error subscribing to the status characteristic");
-      }
-      statusCharacteristic.CharacteristicValueChanged += (o, e) =>
-      {
-        bool isAwake = e.Value[1] == (byte)0;
-        bool isReady = e.Value[2] == (byte)0;
-
-        // the following is unused in favor of the status change notifications and wake control provided by the protobuf service
-        // if (!isAwake)
-        // {
-        //   controlPoint.WriteValueWithResponseAsync(new byte[] { 0x00 }).Wait();
-        // }
-      };
-
+      TrySubscribeMeasurementServices();
 
       bool baseSetupSuccess = base.Setup();
       if (!baseSetupSuccess)
@@ -132,6 +93,32 @@ namespace gspro_r10.bluetooth
         StartTiltCalibration();
 
       return true;
+    }
+
+    private T WaitWithLogging<T>(Func<Task<T>> action, string description)
+    {
+      try
+      {
+        return action().WaitAsync(DefaultTimeout).Result;
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"{description} failed: {ex.GetBaseException().Message}");
+        throw;
+      }
+    }
+
+    private void WaitWithLogging(Func<Task> action, string description)
+    {
+      try
+      {
+        action().WaitAsync(DefaultTimeout).Wait();
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"{description} failed: {ex.GetBaseException().Message}");
+        throw;
+      }
     }
 
     public override void HandleProtobufRequest(IMessage request)
@@ -281,6 +268,53 @@ namespace gspro_r10.bluetooth
         return WrapperProtoResponse.Service.StartTiltCalResponse.Status;
 
       return null;
+    }
+
+    private void TrySubscribeMeasurementServices()
+    {
+      try
+      {
+        if (DebugLogging)
+          BaseLogger.LogDebug("Subscribing to measurement service");
+        IBluetoothGattServiceAdapter measService = WaitWithLogging(
+          () => Device.GetPrimaryServiceAsync(MEASUREMENT_SERVICE_UUID, DefaultTimeout),
+          "Get measurement service"
+        );
+        IBluetoothGattCharacteristicAdapter measCharacteristic = WaitWithLogging(
+          () => measService.GetCharacteristicAsync(MEASUREMENT_CHARACTERISTIC_UUID, DefaultTimeout),
+          "Get measurement characteristic"
+        );
+        WaitWithLogging(() => measCharacteristic.StartNotificationsAsync(DefaultTimeout), "Start measurement notifications");
+        measCharacteristic.ValueChanged += (o, e) => { };
+
+        if (DebugLogging)
+          BaseLogger.LogDebug("Subscribing to control service");
+        IBluetoothGattCharacteristicAdapter controlPoint = WaitWithLogging(
+          () => measService.GetCharacteristicAsync(CONTROL_POINT_CHARACTERISTIC_UUID, DefaultTimeout),
+          "Get control point characteristic"
+        );
+        WaitWithLogging(() => controlPoint.StartNotificationsAsync(DefaultTimeout), "Start control point notifications");
+        controlPoint.ValueChanged += (o, e) => { };
+
+        if (DebugLogging)
+          BaseLogger.LogDebug("Subscribing to status service");
+        IBluetoothGattCharacteristicAdapter statusCharacteristic = WaitWithLogging(
+          () => measService.GetCharacteristicAsync(STATUS_CHARACTERISTIC_UUID, DefaultTimeout),
+          "Get status characteristic"
+        );
+        WaitWithLogging(() => statusCharacteristic.StartNotificationsAsync(DefaultTimeout), "Start status notifications");
+        statusCharacteristic.ValueChanged += (o, bytes) =>
+        {
+          if (bytes.Length < 3)
+            return;
+          bool isAwake = bytes[1] == (byte)0;
+          bool isReady = bytes[2] == (byte)0;
+        };
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"Measurement service subscription skipped: {ex.GetBaseException().Message}");
+      }
     }
 
     protected override void Dispose(bool disposing)
