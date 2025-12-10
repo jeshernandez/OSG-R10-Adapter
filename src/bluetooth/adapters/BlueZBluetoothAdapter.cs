@@ -7,28 +7,32 @@ using Linux.Bluetooth.Extensions;
 using Microsoft.Extensions.Configuration;
 using gspro_r10;
 using gspro_r10.bluetooth;
+using LaunchMonitor.Proto;
 
 namespace gspro_r10.bluetooth.adapters
 {
   public class BlueZBluetoothAdapter
   {
-    private static readonly string BatteryServiceUuid = BaseDevice.BATTERY_SERVICE_UUID.ToString();
-    private static readonly string BatteryLevelCharUuid = BaseDevice.BATTERY_CHARACTERISTIC_UUID.ToString();
-    private static readonly string DeviceInfoServiceUuid = BaseDevice.DEVICE_INFO_SERVICE_UUID.ToString();
+    private static readonly string BatteryServiceUuid = BaseDevice.BATTERY_SERVICE_UUID.ToString().ToLowerInvariant();
+    private static readonly string BatteryLevelCharUuid = BaseDevice.BATTERY_CHARACTERISTIC_UUID.ToString().ToLowerInvariant();
+    private static readonly string DeviceInfoServiceUuid = BaseDevice.DEVICE_INFO_SERVICE_UUID.ToString().ToLowerInvariant();
 
     private static readonly (string Uuid, string Label)[] DeviceInfoCharacteristics = new (string, string)[]
     {
       ("00002a29-0000-1000-8000-00805f9b34fb", "Manufacturer Name"),
-      (BaseDevice.MODEL_CHARACTERISTIC_UUID.ToString(), "Model Number"),
-      (BaseDevice.SERIAL_NUMBER_CHARACTERISTIC_UUID.ToString(), "Serial Number"),
-      (BaseDevice.FIRMWARE_CHARACTERISTIC_UUID.ToString(), "Firmware Revision")
+      (BaseDevice.MODEL_CHARACTERISTIC_UUID.ToString().ToLowerInvariant(), "Model Number"),
+      (BaseDevice.SERIAL_NUMBER_CHARACTERISTIC_UUID.ToString().ToLowerInvariant(), "Serial Number"),
+      (BaseDevice.FIRMWARE_CHARACTERISTIC_UUID.ToString().ToLowerInvariant(), "Firmware Revision")
     };
 
     private readonly IConfigurationSection configuration;
     private readonly bool debugLogging;
+    private readonly ConnectionManager connectionManager;
+    private LinuxLaunchMonitorDevice? launchMonitor;
 
-    public BlueZBluetoothAdapter(IConfigurationSection configurationSection)
+    public BlueZBluetoothAdapter(BluetoothConnection owner, IConfigurationSection configurationSection)
     {
+      connectionManager = owner.ConnectionManager;
       configuration = configurationSection;
       debugLogging = bool.Parse(configurationSection["debugLogging"] ?? "false");
     }
@@ -48,6 +52,10 @@ namespace gspro_r10.bluetooth.adapters
         BluetoothLogger.Error($"Linux Bluetooth error: {ex.Message}");
         if (debugLogging)
           BaseLogger.LogDebug(ex.ToString());
+      }
+      finally
+      {
+        launchMonitor?.Dispose();
       }
     }
 
@@ -95,6 +103,13 @@ namespace gspro_r10.bluetooth.adapters
       await LogBatteryStatus(device);
       await LogDeviceInformation(device);
 
+      launchMonitor = await SetupLaunchMonitorAsync(device);
+      if (launchMonitor == null)
+      {
+        BluetoothLogger.Error("Linux launch monitor setup failed.");
+        return;
+      }
+
       BluetoothLogger.Info("Linux Bluetooth initialization complete. Waiting for shutdown signal...");
       await Task.Delay(Timeout.Infinite, cancellationToken);
     }
@@ -134,17 +149,6 @@ namespace gspro_r10.bluetooth.adapters
         byte[] value = await batteryChar.ReadValueAsync(TimeSpan.FromSeconds(5));
         int batteryPercent = value.Length > 0 ? value[0] : -1;
         BluetoothLogger.Info($"Battery Level: {batteryPercent}%");
-
-        batteryChar.Value += (sender, args) =>
-        {
-          var data = args.Value;
-          if (data.Length > 0)
-            BluetoothLogger.Info($"Battery Level Updated: {data[0]}%");
-          return Task.CompletedTask;
-        };
-
-        await batteryChar.StartNotifyAsync();
-        Debug("Subscribed to battery notifications.");
       }
       catch (Exception ex)
       {
@@ -184,6 +188,61 @@ namespace gspro_r10.bluetooth.adapters
         if (debugLogging)
           BaseLogger.LogDebug(ex.ToString());
       }
+    }
+
+    private async Task<LinuxLaunchMonitorDevice?> SetupLaunchMonitorAsync(Device device)
+    {
+      var lm = new LinuxLaunchMonitorDevice(device);
+      lm.AutoWake = bool.Parse(configuration["autoWake"] ?? "false");
+      lm.CalibrateTiltOnConnect = bool.Parse(configuration["calibrateTiltOnConnect"] ?? "false");
+      lm.DebugLogging = debugLogging;
+
+      lm.MessageRecieved += (o, e) => BluetoothLogger.Incoming(e.Message?.ToString() ?? string.Empty);
+      lm.MessageSent += (o, e) => BluetoothLogger.Outgoing(e.Message?.ToString() ?? string.Empty);
+      lm.BatteryLifeUpdated += (o, e) => BluetoothLogger.Info($"Battery Life Updated: {e.Battery}%");
+      lm.Error += (o, e) => BluetoothLogger.Error($"{e.Severity}: {e.Message}");
+
+      if (bool.Parse(configuration["sendStatusChangesToGSP"] ?? "false"))
+      {
+        lm.ReadinessChanged += (o, e) =>
+        {
+          connectionManager.SendLaunchMonitorReadyUpdate(e.Ready);
+        };
+      }
+
+      lm.ShotMetrics += (o, e) =>
+      {
+        BluetoothConnection.LogMetrics(e.Metrics);
+        connectionManager.SendShot(
+          BluetoothConnection.BallDataFromLaunchMonitorMetrics(e.Metrics?.BallMetrics),
+          BluetoothConnection.ClubDataFromLaunchMonitorMetrics(e.Metrics?.ClubMetrics)
+        );
+      };
+
+      if (!await lm.Setup())
+      {
+        BluetoothLogger.Error("Failed Device Setup");
+        return null;
+      }
+
+      float temperature = float.Parse(configuration["temperature"] ?? "60");
+      float humidity = float.Parse(configuration["humidity"] ?? "1");
+      float altitude = float.Parse(configuration["altitude"] ?? "0");
+      float airDensity = float.Parse(configuration["airDensity"] ?? "1");
+      float teeDistanceInFeet = float.Parse(configuration["teeDistanceInFeet"] ?? "7");
+      float teeRange = teeDistanceInFeet * (1 / 3.281f);
+
+      lm.ShotConfig(temperature, humidity, altitude, airDensity, teeRange);
+
+      BluetoothLogger.Info($"Device Setup Complete: ");
+      BluetoothLogger.Info($"   Model: {lm.Model}");
+      BluetoothLogger.Info($"   Firmware: {lm.Firmware}");
+      BluetoothLogger.Info($"   Bluetooth ID: {lm.Device.ObjectPath}");
+      BluetoothLogger.Info($"   Battery: {lm.Battery}%");
+      BluetoothLogger.Info($"   Current State: {lm.CurrentState}");
+      BluetoothLogger.Info($"   Tilt: {lm.DeviceTilt}");
+
+      return lm;
     }
 
     private void Debug(string message)

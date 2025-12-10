@@ -35,7 +35,7 @@ namespace gspro_r10
 
       if (platform == BluetoothPlatform.Linux)
       {
-        linuxAdapter = new BlueZBluetoothAdapter(configuration);
+        linuxAdapter = new BlueZBluetoothAdapter(this, configuration);
         linuxCancellation = new CancellationTokenSource();
         linuxWorker = Task.Run(() => linuxAdapter.RunAsync(linuxCancellation.Token));
       }
@@ -219,7 +219,7 @@ namespace gspro_r10
       }
     }
 
-    public void LogMetrics(Metrics? metrics)
+    public static void LogMetrics(Metrics? metrics)
     {
       if (metrics == null)
       {

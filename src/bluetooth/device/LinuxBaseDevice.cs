@@ -69,6 +69,7 @@ namespace gspro_r10.bluetooth
     private GattCharacteristic? mGattWriter;
     private bool mDisposedValue;
     public bool DebugLogging { get; set; } = false;
+    protected static readonly TimeSpan GattTimeout = TimeSpan.FromSeconds(15);
 
     public LinuxBaseDevice(Device device)
     {
@@ -80,53 +81,122 @@ namespace gspro_r10.bluetooth
       mMsgProcessingTask = Task.Run(MsgProcessingThread, mCancellationToken.Token);
     }
 
-    public virtual bool Setup()
+    public virtual async Task<bool> Setup()
     {
+      try
+      {
+        return await SetupInternalAsync();
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"Linux Base setup failed: {ex.Message}");
+        if (DebugLogging)
+          BaseLogger.LogDebug(ex.ToString());
+        return false;
+      }
+    }
+
+    private async Task<bool> SetupInternalAsync()
+    {
+      BluetoothLogger.Info("Linux Base: Getting device info service");
       if (DebugLogging)
         BaseLogger.LogDebug($"Getting device info service");
-      var deviceInfoService = Device.GetServiceAsync(DEVICE_INFO_SERVICE_UUID.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
+      var deviceInfoService = await AwaitGattAsync(Device.GetServiceAsync(DEVICE_INFO_SERVICE_UUID.ToString().ToLowerInvariant()), "device info service");
+
+      BluetoothLogger.Info("Linux Base: Reading serial number");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading serial number");
-      GattCharacteristic serialCharacteristic = deviceInfoService.GetCharacteristicAsync(SERIAL_NUMBER_CHARACTERISTIC_UUID.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      Serial = Encoding.ASCII.GetString(serialCharacteristic.ReadValueAsync(TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(5)).Result);
+      GattCharacteristic serialCharacteristic = await AwaitGattAsync(deviceInfoService.GetCharacteristicAsync(SERIAL_NUMBER_CHARACTERISTIC_UUID.ToString().ToLowerInvariant()), "serial characteristic");
+      Serial = Encoding.ASCII.GetString((await AwaitGattAsync(serialCharacteristic.ReadValueAsync(GattTimeout), "serial read")).ToArray());
+
+      BluetoothLogger.Info("Linux Base: Reading firmware version");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading firmware version");
-      GattCharacteristic firmwareCharacteristic = deviceInfoService.GetCharacteristicAsync(FIRMWARE_CHARACTERISTIC_UUID.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      Firmware = Encoding.ASCII.GetString(firmwareCharacteristic.ReadValueAsync(TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(5)).Result);
+      GattCharacteristic firmwareCharacteristic = await AwaitGattAsync(deviceInfoService.GetCharacteristicAsync(FIRMWARE_CHARACTERISTIC_UUID.ToString().ToLowerInvariant()), "firmware characteristic");
+      Firmware = Encoding.ASCII.GetString((await AwaitGattAsync(firmwareCharacteristic.ReadValueAsync(GattTimeout), "firmware read")).ToArray());
+
+      BluetoothLogger.Info("Linux Base: Reading model name");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading model name");
-      GattCharacteristic modelCharacteristic = deviceInfoService.GetCharacteristicAsync(MODEL_CHARACTERISTIC_UUID.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      Model = Encoding.ASCII.GetString(modelCharacteristic.ReadValueAsync(TimeSpan.FromSeconds(5)).WaitAsync(TimeSpan.FromSeconds(5)).Result);
+      GattCharacteristic modelCharacteristic = await AwaitGattAsync(deviceInfoService.GetCharacteristicAsync(MODEL_CHARACTERISTIC_UUID.ToString().ToLowerInvariant()), "model characteristic");
+      Model = Encoding.ASCII.GetString((await AwaitGattAsync(modelCharacteristic.ReadValueAsync(GattTimeout), "model read")).ToArray());
+
+      BluetoothLogger.Info("Linux Base: Reading battery characteristic");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading battery life");
-      var batteryService = Device.GetServiceAsync(BATTERY_SERVICE_UUID.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      GattCharacteristic batteryCharacteristic = batteryService.GetCharacteristicAsync(BATTERY_CHARACTERISTIC_UUID.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
+      var batteryService = await AwaitGattAsync(Device.GetServiceAsync(BATTERY_SERVICE_UUID.ToString().ToLowerInvariant()), "battery service");
+      GattCharacteristic batteryCharacteristic = await AwaitGattAsync(batteryService.GetCharacteristicAsync(BATTERY_CHARACTERISTIC_UUID.ToString().ToLowerInvariant()), "battery characteristic");
+
+      // Register event handler BEFORE starting notifications
       batteryCharacteristic.Value += (o, e) =>
       {
         if (e.Value.Length > 0)
           Battery = e.Value[0];
         return Task.CompletedTask;
       };
-      batteryCharacteristic.StartNotifyAsync().Wait(TimeSpan.FromSeconds(5));
+
+      await AwaitGattAsync(batteryCharacteristic.StartNotifyAsync(), "battery notifications");
+
+      BluetoothLogger.Info("Linux Base: Preparing device interface service");
       if (DebugLogging)
         BaseLogger.LogDebug($"Setting up device interface service");
-      var deviceInterfaceService = Device.GetServiceAsync(DEVICE_INTERFACE_SERVICE.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
+      var deviceInterfaceService = await AwaitGattAsync(Device.GetServiceAsync(DEVICE_INTERFACE_SERVICE.ToString().ToLowerInvariant()), "device interface service");
+
       if (DebugLogging)
         BaseLogger.LogDebug($"Getting writer");
-      mGattWriter = deviceInterfaceService.GetCharacteristicAsync(DEVICE_INTERFACE_WRITER.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
+      mGattWriter = await AwaitGattAsync(deviceInterfaceService.GetCharacteristicAsync(DEVICE_INTERFACE_WRITER.ToString().ToLowerInvariant()), "device interface writer");
+
       if (DebugLogging)
         BaseLogger.LogDebug($"Getting reader");
-      GattCharacteristic deviceInterfaceNotifier = deviceInterfaceService.GetCharacteristicAsync(DEVICE_INTERFACE_NOTIFIER.ToString()).WaitAsync(TimeSpan.FromSeconds(5)).Result;
-      deviceInterfaceNotifier.StartNotifyAsync().Wait(TimeSpan.FromSeconds(5));
+      GattCharacteristic deviceInterfaceNotifier = await AwaitGattAsync(deviceInterfaceService.GetCharacteristicAsync(DEVICE_INTERFACE_NOTIFIER.ToString().ToLowerInvariant()), "device interface notifier");
+
+      // Register event handler BEFORE starting notifications
       deviceInterfaceNotifier.Value += (o, e) =>
       {
         ReadBytes(e.Value);
         return Task.CompletedTask;
       };
+
+      await AwaitGattAsync(deviceInterfaceNotifier.StartNotifyAsync(), "device interface notifier notifications");
+
+      // Give the notification subscription a moment to become fully active
+      await Task.Delay(100);
+
+      BluetoothLogger.Info("Linux Base: Performing handshake");
       bool handshakeSuccess = PerformHandShake();
       if (!handshakeSuccess)
         Console.WriteLine("Failed handshake. Something went wrong in setup");
+      else
+        BluetoothLogger.Info("Linux Base: Handshake complete");
       return handshakeSuccess;
+    }
+
+    protected async Task<T> AwaitGattAsync<T>(Task<T> task, string description)
+    {
+      try
+      {
+        BluetoothLogger.Info($"Linux GATT: Waiting for {description}");
+        return await task.WaitAsync(GattTimeout);
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"Linux GATT: {description} failed - {ex.Message}");
+        throw;
+      }
+    }
+
+    protected async Task AwaitGattAsync(Task task, string description)
+    {
+      try
+      {
+        BluetoothLogger.Info($"Linux GATT: Waiting for {description}");
+        await task.WaitAsync(GattTimeout);
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"Linux GATT: {description} failed - {ex.Message}");
+        throw;
+      }
     }
 
     private void ReaderThread()
@@ -184,10 +254,17 @@ namespace gspro_r10.bluetooth
     private void WriterThread()
     {
       while (!mCancellationToken.IsCancellationRequested)
+      {
         if (mWriterQueue.Count > 0)
-          mGattWriter?.WriteValueAsync(mWriterQueue.Dequeue(), new Dictionary<string, object>()).Wait();
+        {
+          // Fire-and-forget, matching Windows behavior
+          _ = mGattWriter?.WriteValueAsync(mWriterQueue.Dequeue(), new Dictionary<string, object>());
+        }
         else
+        {
           mWriterSignal.WaitOne(5000);
+        }
+      }
     }
 
     private void MsgProcessingThread()
@@ -234,6 +311,9 @@ namespace gspro_r10.bluetooth
       byte[] msg = frame.Skip(2).SkipLast(2).ToArray();
       string hex = msg.ToHexString();
 
+      if (DebugLogging)
+        BaseLogger.LogDebug($"ProcessMessage: {hex}");
+
       List<byte> ackBody = new List<byte>() { 0x00 };
 
       if (hex.StartsWith("A013"))
@@ -250,11 +330,18 @@ namespace gspro_r10.bluetooth
         ackBody.AddRange(msg[2..4]);
         ackBody.AddRange("00000000000000".ToByteArray());
 
+        if (DebugLogging)
+          BaseLogger.LogDebug($"B413 response: counter={counter}, expected={mProtoRequestCounter}");
+
         if (counter == mProtoRequestCounter)
         {
           mLastProtoReceived = WrapperProto.Parser.ParseFrom(msg.Skip(16).ToArray());
           MessageRecieved?.Invoke(this, new MessageEventArgs() { Message = mLastProtoReceived } );
           mProtoResponseResetEvent.Set();
+        }
+        else if (DebugLogging)
+        {
+          BaseLogger.LogDebug($"B413 counter mismatch! Ignoring response.");
         }
       }
       else if (hex.StartsWith("B313")) // all protobuf requests
