@@ -9,12 +9,26 @@ The goal of this project was to provide an ultra lightweight alterntive to the c
 
 ![Sample](screenshot.png)
 
+## Table of Contents
+- [Configuration](#configuration)
+- [Using Direct Bluetooth Connector](#using-direct-bluetooth-connector)
+- [Using the putting integration](#using-the-putting-integration)
+- [Running](#running)
+  - [From release](#from-release)
+  - [From Source](#from-source)
+
+## Configuration
+
+- `bluetooth.provider`: choose `windows` or `linux` (defaults to the host OS if left blank). Windows uses the WinRT-based connector; the Linux path is being migrated to a BlueZ-backed provider.
+- `bluetoothDeviceName` / `bluetoothDeviceAddress`: name or MAC of the R10. If Linux/BlueZ reports only the MAC, set `bluetoothDeviceAddress` (e.g. `F4:9D:AA:D0:05:05`).
+- Adjust altitude, tee distance, temperature, etc. in `settings.json` as before.
 
 ## Using Direct Bluetooth Connector
 
 In order to use the direct bluetooth connection to the R10 you must
 - Enable bluetooth in `settings.json` file
 - Edit `settings.json` to reflect your desired altitude, tee distance, temperature, etc.
+- If your OS reports the R10 as its MAC address instead of "Approach R10", set `bluetoothDeviceAddress` (e.g. `F4:9D:AA:D0:05:05`) in `settings.json`
 - Set device in pairing mode (blue blinking light) by holding power button for few seconds
 - **Pair the R10 from the windows bluetooth settings**
   - On windows 11 you may need to set "Bluetooth Device Discovery" to `advanced`
@@ -42,6 +56,7 @@ In order to use the putting integration you must
 ### From Source
 
 - Install a dotnet 9 sdk if you don't have one already
-- `dotnet run` from project directory
+- Linux: `dotnet run -f net9.0 --project gspro-r10.csproj`
+- Windows: `dotnet run -f net9.0-windows10.0.19041 --project gspro-r10.csproj`
 - You can force the simulator target with `dotnet run -- --sim gspro` or `dotnet run -- --sim osg` (the `--` separates app args from dotnet)
 - Without the flag, the simulator is inferred from `openConnect.port` in `settings.json` (`49152` => OpenShotGolf, `921` => GSPro)

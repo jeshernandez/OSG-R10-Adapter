@@ -69,6 +69,8 @@ namespace gspro_r10.bluetooth
     private GattCharacteristic? mGattWriter;
     private bool mDisposedValue;
     public bool DebugLogging { get; set; } = false;
+    // Enable to always log raw BLE frames as they arrive (helpful when sniffing on Linux/BlueZ)
+    public bool SniffLogging { get; set; } = false;
 
     public BaseDevice(BluetoothDevice device)
     {
@@ -217,6 +219,9 @@ namespace gspro_r10.bluetooth
 
     private void ProcessMessage(byte[] frame)
     {
+      if (SniffLogging)
+        BaseLogger.LogMessage($"SNF frame {frame.ToHexString()}", "BLE", LogMessageType.Informational, ConsoleColor.Cyan);
+
       if (BitConverter.ToUInt16(frame.SkipLast(2).Checksum()) != BitConverter.ToUInt16(frame.TakeLast(2).ToArray()))
       {
         Console.WriteLine("CRC ERROR");
@@ -301,6 +306,8 @@ namespace gspro_r10.bluetooth
 
     private void ReadBytes(byte[] bytes)
     {
+      if (SniffLogging)
+        BaseLogger.LogMessage($"SNF raw <- {bytes.ToHexString()}", "BLE", LogMessageType.Informational, ConsoleColor.Cyan);
       if (DebugLogging)
         BaseLogger.LogDebug($"      -> {bytes.ToHexString().PadRight(40)} (ble read)");
       mReaderQueue.Enqueue(bytes);

@@ -10,7 +10,7 @@ namespace gspro_r10
   {
     private R10ConnectionServer? R10Server;
     private List<IOpenConnectClient> OpenConnectClients = new List<IOpenConnectClient>();
-    private BluetoothConnection? BluetoothConnection { get; }
+    private IDisposable? BluetoothConnection { get; }
     internal HttpPuttingServer? PuttingConnection { get; }
     public event ClubChangedEventHandler? ClubChanged;
     public delegate void ClubChangedEventHandler(object sender, ClubChangedEventArgs e);
@@ -45,8 +45,26 @@ namespace gspro_r10
         R10Server.Start();
       }
 
-      if (bool.Parse(configuration.GetSection("bluetooth")["enabled"] ?? "false"))
-        BluetoothConnection = new BluetoothConnection(this, configuration.GetSection("bluetooth"));
+      IConfigurationSection bluetoothSection = configuration.GetSection("bluetooth");
+      if (bool.Parse(bluetoothSection["enabled"] ?? "false"))
+      {
+        string provider = (bluetoothSection["provider"] ?? string.Empty).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(provider))
+          provider = OperatingSystem.IsWindows() ? "windows" : "linux";
+
+        switch (provider)
+        {
+          case "linux":
+            BaseLogger.LogMessage("Using Linux Bluetooth provider (BlueZ)", "Main");
+            BluetoothConnection = new LinuxBluetoothConnection(this, bluetoothSection);
+            break;
+          case "windows":
+          default:
+            BaseLogger.LogMessage("Using Windows Bluetooth provider", "Main");
+            BluetoothConnection = new BluetoothConnection(this, bluetoothSection);
+            break;
+        }
+      }
 
       if (bool.Parse(configuration.GetSection("putting")["enabled"] ?? "false"))
       {

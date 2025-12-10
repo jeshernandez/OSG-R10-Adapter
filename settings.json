@@ -10,16 +10,19 @@
   "bluetooth": {
     "enabled": true, //bluetooth enabled
     "bluetoothDeviceName": "Approach R10",
+    "provider": "linux", // set to 'windows' or 'linux' (defaults to OS if blank)
+    "bluetoothDeviceAddress": "F49DAAD00505", // optional mac address fallback if the OS only exposes the address as the name
     "reconnectInterval": 10, // seconds
     "sendStatusChangesToGSP": false, // send device readiness updates to gsp (does nothing as of today)
     "autoWake": true, // wake device if falls asleep
     "calibrateTiltOnConnect": true, // recalibrate tilt at the start of every session
-    "debugLogging": false,
+    "debugLogging": true,
     "altitude": 0, // feet
     "humidity": 0.5,  // percent (0 - 1)
     "temperature": 60, // fahrenheit 
     "airDensity": 1.225, // kg/m^3
-    "teeDistanceInFeet": 7 // distance from R10 to ball in feet
+    "teeDistanceInFeet": 7, // distance from R10 to ball in feet
+    "sniffLogging": true
   },
   "putting": {
     "enabled": false,
