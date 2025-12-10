@@ -29,5 +29,8 @@
   <ItemGroup>
     <Protobuf Include="src/bluetooth/proto/LaunchMonitor.proto" ProtoRoot="src/bluetooth/proto" GrpcServices="None" />
   </ItemGroup>
+    <ItemGroup>
+  <PackageReference Include="Linux.Bluetooth" Version="5.67.1" />
+  </ItemGroup>
 
 </Project>

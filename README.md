@@ -14,6 +14,7 @@ The goal of this project was to provide an ultra lightweight alterntive to the c
 
 In order to use the direct bluetooth connection to the R10 you must
 - Enable bluetooth in `settings.json` file
+- Set the `bluetooth.platform` option to `windows` (default) or `linux` depending on the OS you are targeting. The Linux option uses the new Linux.Bluetooth/BlueZ flow and requires the `bluetoothDeviceAddress` entry to be set to the R10 MAC address.
 - Edit `settings.json` to reflect your desired altitude, tee distance, temperature, etc.
 - Set device in pairing mode (blue blinking light) by holding power button for few seconds
 - **Pair the R10 from the windows bluetooth settings**

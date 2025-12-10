@@ -9,7 +9,9 @@
   },
   "bluetooth": {
     "enabled": true, //bluetooth enabled
+    "platform": "linux", // bluetooth stack to use: windows or linux
     "bluetoothDeviceName": "Approach R10",
+    "bluetoothDeviceAddress": "F4:9D:AA:D0:05:05", // MAC required when platform=linux
     "reconnectInterval": 10, // seconds
     "sendStatusChangesToGSP": false, // send device readiness updates to gsp (does nothing as of today)
     "autoWake": true, // wake device if falls asleep
