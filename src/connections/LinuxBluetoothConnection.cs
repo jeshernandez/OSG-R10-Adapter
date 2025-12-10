@@ -30,7 +30,7 @@ namespace gspro_r10
     {
       ConnectionManager = connectionManager;
       Configuration = configuration;
-      ReconnectInterval = int.Parse(configuration["reconnectInterval"] ?? "5");
+      ReconnectInterval = int.Parse(configuration["reconnectInterval"] ?? "20");
 
       BluetoothLogger.Info("Initializing Linux Bluetooth provider (BlueZ)");
       Task.Run(async () => await ConnectToDeviceAsync(), cancellation.Token);

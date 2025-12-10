@@ -88,27 +88,8 @@ namespace gspro_r10.bluetooth
 
     public virtual bool Setup()
     {
-      if (DebugLogging)
-        BaseLogger.LogDebug($"Getting device info service");
-      IBluetoothGattServiceAdapter deviceInfoService = Device.GetPrimaryServiceAsync(DEVICE_INFO_SERVICE_UUID, DefaultTimeout).Result;
-      if (DebugLogging)
-        BaseLogger.LogDebug($"Reading serial number");
-      IBluetoothGattCharacteristicAdapter serialCharacteristic = deviceInfoService.GetCharacteristicAsync(SERIAL_NUMBER_CHARACTERISTIC_UUID, DefaultTimeout).Result;
-      Serial = Encoding.ASCII.GetString(serialCharacteristic.ReadValueAsync(DefaultTimeout).Result);
-      if (DebugLogging)
-        BaseLogger.LogDebug($"Reading firmware version");
-      IBluetoothGattCharacteristicAdapter firmwareCharacteristic = deviceInfoService.GetCharacteristicAsync(FIRMWARE_CHARACTERISTIC_UUID, DefaultTimeout).Result;
-      Firmware = Encoding.ASCII.GetString(firmwareCharacteristic.ReadValueAsync(DefaultTimeout).Result);
-      if (DebugLogging)
-        BaseLogger.LogDebug($"Reading model name");
-      IBluetoothGattCharacteristicAdapter modelCharacteristic = deviceInfoService.GetCharacteristicAsync(MODEL_CHARACTERISTIC_UUID, DefaultTimeout).Result;
-      Model = Encoding.ASCII.GetString(modelCharacteristic.ReadValueAsync(DefaultTimeout).Result);
-      if (DebugLogging)
-        BaseLogger.LogDebug($"Reading battery life");
-      IBluetoothGattServiceAdapter batteryService = Device.GetPrimaryServiceAsync(BATTERY_SERVICE_UUID, DefaultTimeout).Result;
-      IBluetoothGattCharacteristicAdapter batteryCharacteristic = batteryService.GetCharacteristicAsync(BATTERY_CHARACTERISTIC_UUID, DefaultTimeout).Result;
-      batteryCharacteristic.ValueChanged += (o, bytes) => Battery = bytes[0];
-      batteryCharacteristic.StartNotificationsAsync(DefaultTimeout).Wait();
+      TryReadDeviceInfo();
+      TrySubscribeBattery();
       if (DebugLogging)
         BaseLogger.LogDebug($"Setting up device interface service");
       IBluetoothGattServiceAdapter deviceInterfaceService = Device.GetPrimaryServiceAsync(DEVICE_INTERFACE_SERVICE, DefaultTimeout).Result;
@@ -351,6 +332,49 @@ namespace gspro_r10.bluetooth
       }
       if (encoded.Count > 0)
         SendBytes(encoded);
+    }
+
+    private void TryReadDeviceInfo()
+    {
+      try
+      {
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Getting device info service");
+        IBluetoothGattServiceAdapter deviceInfoService = Device.GetPrimaryServiceAsync(DEVICE_INFO_SERVICE_UUID, DefaultTimeout).Result;
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Reading serial number");
+        IBluetoothGattCharacteristicAdapter serialCharacteristic = deviceInfoService.GetCharacteristicAsync(SERIAL_NUMBER_CHARACTERISTIC_UUID, DefaultTimeout).Result;
+        Serial = Encoding.ASCII.GetString(serialCharacteristic.ReadValueAsync(DefaultTimeout).Result);
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Reading firmware version");
+        IBluetoothGattCharacteristicAdapter firmwareCharacteristic = deviceInfoService.GetCharacteristicAsync(FIRMWARE_CHARACTERISTIC_UUID, DefaultTimeout).Result;
+        Firmware = Encoding.ASCII.GetString(firmwareCharacteristic.ReadValueAsync(DefaultTimeout).Result);
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Reading model name");
+        IBluetoothGattCharacteristicAdapter modelCharacteristic = deviceInfoService.GetCharacteristicAsync(MODEL_CHARACTERISTIC_UUID, DefaultTimeout).Result;
+        Model = Encoding.ASCII.GetString(modelCharacteristic.ReadValueAsync(DefaultTimeout).Result);
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"Device info service unavailable: {ex.GetBaseException().Message}");
+      }
+    }
+
+    private void TrySubscribeBattery()
+    {
+      try
+      {
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Reading battery life");
+        IBluetoothGattServiceAdapter batteryService = Device.GetPrimaryServiceAsync(BATTERY_SERVICE_UUID, DefaultTimeout).Result;
+        IBluetoothGattCharacteristicAdapter batteryCharacteristic = batteryService.GetCharacteristicAsync(BATTERY_CHARACTERISTIC_UUID, DefaultTimeout).Result;
+        batteryCharacteristic.ValueChanged += (o, bytes) => Battery = bytes[0];
+        batteryCharacteristic.StartNotificationsAsync(DefaultTimeout).Wait();
+      }
+      catch (Exception ex)
+      {
+        BluetoothLogger.Error($"Battery service unavailable: {ex.GetBaseException().Message}");
+      }
     }
 
     protected virtual void Dispose(bool disposing)

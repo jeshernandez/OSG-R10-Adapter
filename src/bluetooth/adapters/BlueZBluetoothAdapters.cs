@@ -4,6 +4,7 @@ using Linux.Bluetooth.Extensions;
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Tmds.DBus;
 
 namespace gspro_r10.bluetooth.adapters
 {
@@ -24,12 +25,12 @@ namespace gspro_r10.bluetooth.adapters
     public async Task<IBluetoothGattServiceAdapter> GetPrimaryServiceAsync(Guid serviceUuid, TimeSpan? timeout = null)
     {
       string uuid = serviceUuid.ToString();
-      var serviceTask = device.GetServiceAsync(uuid);
-      IGattService1 service = timeout.HasValue
-        ? await serviceTask.WaitAsync(timeout.Value)
-        : await serviceTask;
-
-      return new BlueZGattServiceAdapter(service);
+      IGattService1 service = await WaitForAsync(
+        () => device.GetServiceAsync(uuid),
+        $"service {uuid}",
+        timeout ?? TimeSpan.FromSeconds(30)
+      );
+      return new BlueZGattServiceAdapter(service, uuid, timeout ?? TimeSpan.FromSeconds(30));
     }
 
     public Task DisconnectAsync() => device.DisconnectAsync();
@@ -38,24 +39,60 @@ namespace gspro_r10.bluetooth.adapters
     {
       device?.Dispose();
     }
+
+  private async Task<T> WaitForAsync<T>(Func<Task<T>> action, string description, TimeSpan timeout)
+  {
+    TimeSpan pollDelay = TimeSpan.FromMilliseconds(500);
+    DateTime deadline = DateTime.UtcNow + timeout;
+    Exception? last = null;
+
+    while (true)
+    {
+      try
+      {
+        // No inner 5s WaitAsync – just call the action
+        return await action();
+      }
+      catch (Exception ex) when (IsTransientDbus(ex))
+      {
+        last = ex;
+
+        if (DateTime.UtcNow >= deadline)
+          break;
+
+        await Task.Delay(pollDelay);
+      }
+    }
+
+    throw new TimeoutException($"Timed out waiting for {description}", last);
+  }
+
+    private bool IsTransientDbus(Exception ex) =>
+      ex is DBusException ||
+      (ex.InnerException != null && IsTransientDbus(ex.InnerException));
   }
 
   public class BlueZGattServiceAdapter : IBluetoothGattServiceAdapter
   {
     private readonly IGattService1 service;
+    private readonly string uuid;
+    private readonly TimeSpan defaultTimeout;
 
-    public BlueZGattServiceAdapter(IGattService1 service)
+    public BlueZGattServiceAdapter(IGattService1 service, string uuid, TimeSpan timeout)
     {
       this.service = service;
+      this.uuid = uuid;
+      defaultTimeout = timeout;
     }
 
     public async Task<IBluetoothGattCharacteristicAdapter> GetCharacteristicAsync(Guid characteristicUuid, TimeSpan? timeout = null)
     {
-      string uuid = characteristicUuid.ToString();
-      var characteristicTask = service.GetCharacteristicAsync(uuid);
-      GattCharacteristic characteristic = timeout.HasValue
-        ? await characteristicTask.WaitAsync(timeout.Value)
-        : await characteristicTask;
+      string charUuid = characteristicUuid.ToString();
+      GattCharacteristic characteristic = await WaitForAsync(
+        () => service.GetCharacteristicAsync(charUuid),
+        $"characteristic {charUuid} (service {uuid})",
+        timeout ?? defaultTimeout
+      );
 
       return new BlueZGattCharacteristicAdapter(characteristic);
     }
@@ -64,6 +101,38 @@ namespace gspro_r10.bluetooth.adapters
     {
       (service as IDisposable)?.Dispose();
     }
+
+private async Task<T> WaitForAsync<T>(Func<Task<T>> action, string description, TimeSpan timeout)
+{
+  TimeSpan pollDelay = TimeSpan.FromMilliseconds(500);
+  DateTime deadline = DateTime.UtcNow + timeout;
+  Exception? last = null;
+
+  while (true)
+  {
+    try
+    {
+      // No inner 5s WaitAsync – just call the action
+      return await action();
+    }
+    catch (Exception ex) when (IsTransientDbus(ex))
+    {
+      last = ex;
+
+      if (DateTime.UtcNow >= deadline)
+        break;
+
+      await Task.Delay(pollDelay);
+    }
+  }
+
+  throw new TimeoutException($"Timed out waiting for {description}", last);
+}
+
+
+    private bool IsTransientDbus(Exception ex) =>
+      ex is DBusException ||
+      (ex.InnerException != null && IsTransientDbus(ex.InnerException));
   }
 
   public class BlueZGattCharacteristicAdapter : IBluetoothGattCharacteristicAdapter
