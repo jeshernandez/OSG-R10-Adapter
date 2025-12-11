@@ -1,9 +1,11 @@
+using gspro_r10.bluetooth;
+using gspro_r10.bluetooth.adapters;
 using gspro_r10.OpenConnect;
 using InTheHand.Bluetooth;
 using LaunchMonitor.Proto;
-using gspro_r10.bluetooth;
 using Microsoft.Extensions.Configuration;
 using System.Text;
+using System.Threading;
 
 namespace gspro_r10
 {
@@ -19,16 +21,40 @@ namespace gspro_r10
     public LaunchMonitorDevice? LaunchMonitor { get; private set; }
     public BluetoothDevice? Device { get; private set; }
 
+    private readonly BluetoothPlatform platform;
+    private readonly BlueZBluetoothAdapter? linuxAdapter;
+    private readonly CancellationTokenSource? linuxCancellation;
+    private readonly Task? linuxWorker;
+
     public BluetoothConnection(ConnectionManager connectionManager, IConfigurationSection configuration)
     {
       ConnectionManager = connectionManager;
       Configuration = configuration;
       ReconnectInterval = int.Parse(configuration["reconnectInterval"] ?? "5");
-      Task.Run(ConnectToDevice);
+      platform = ParsePlatform(configuration["platform"]);
+
+      if (platform == BluetoothPlatform.Linux)
+      {
+        linuxAdapter = new BlueZBluetoothAdapter(this, configuration);
+        linuxCancellation = new CancellationTokenSource();
+        linuxWorker = Task.Run(() => linuxAdapter.RunAsync(linuxCancellation.Token));
+      }
+      else
+      {
+        Task.Run(ConnectToDeviceWindows);
+      }
 
     }
 
-    private void ConnectToDevice()
+    private static BluetoothPlatform ParsePlatform(string? value)
+    {
+      if (string.Equals(value, "linux", StringComparison.OrdinalIgnoreCase))
+        return BluetoothPlatform.Linux;
+
+      return BluetoothPlatform.Windows;
+    }
+
+    private void ConnectToDeviceWindows()
     {
       string deviceName = Configuration["bluetoothDeviceName"] ?? "Approach R10";
       Device = FindDevice(deviceName);
@@ -67,7 +93,7 @@ namespace gspro_r10
         Device.GattServerDisconnected -= OnDeviceDisconnected;
       LaunchMonitor?.Dispose();
 
-      Task.Run(ConnectToDevice);
+      Task.Run(ConnectToDeviceWindows);
     }
 
     private LaunchMonitorDevice? SetupLaunchMonitor(BluetoothDevice device)
@@ -168,16 +194,32 @@ namespace gspro_r10
       {
         if (disposing)
         {
-          if (Device != null)
-            Device.GattServerDisconnected -= OnDeviceDisconnected;
-          LaunchMonitor?.Dispose();
+          if (platform == BluetoothPlatform.Linux)
+          {
+            if (linuxCancellation != null)
+            {
+              linuxCancellation.Cancel();
+              try
+              {
+                linuxWorker?.Wait(TimeSpan.FromSeconds(2));
+              }
+              catch (AggregateException) { }
+              linuxCancellation.Dispose();
+            }
+          }
+          else
+          {
+            if (Device != null)
+              Device.GattServerDisconnected -= OnDeviceDisconnected;
+            LaunchMonitor?.Dispose();
+          }
         }
 
         disposedValue = true;
       }
     }
 
-    public void LogMetrics(Metrics? metrics)
+    public static void LogMetrics(Metrics? metrics)
     {
       if (metrics == null)
       {
@@ -233,6 +275,12 @@ namespace gspro_r10
       Dispose(disposing: true);
       GC.SuppressFinalize(this);
     }
+  }
+
+  internal enum BluetoothPlatform
+  {
+    Windows,
+    Linux
   }
 
   public static class BluetoothLogger
