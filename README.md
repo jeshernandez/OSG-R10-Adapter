@@ -7,15 +7,67 @@ Utility to bridge R10 launch monitor to GSPro and OpenShotGolf (OSG). Supports t
     - One item is ball types are not identifiable on Linux side (that I know of, yet). 
 
 ## Table of Contents
+- [Dual Simulator Support](#dual-simulator-support)
 - [Using Direct Bluetooth Connector](#using-direct-bluetooth-connector)
   - [Windows Bluetooth Setup](#windows-bluetooth-setup)
   - [Linux Bluetooth Support](#linux-bluetooth-support)
 - [Using the Putting Integration](#using-the-putting-integration)
+- [Building from Source](#building-from-source)
+  - [Quick Build](#quick-build)
+  - [Build Script Options](#build-script-options)
 - [Running the Application](#running)
 - [Sample Output](#sample-output)
 
 
 ![Screenshot](assets/images/screenshot.png)
+
+## Dual Simulator Support
+
+The adapter now supports broadcasting shot data to **multiple golf simulators simultaneously**! This allows you to compare how different simulator physics engines interpret the same launch monitor data from your Garmin R10.
+
+![Both Simulators Running](assets/images/both_sims.png)
+
+### How It Works
+
+When you hit a shot, the adapter:
+1. Receives shot data from your R10 via Bluetooth
+2. Converts it to the OpenConnect API format
+3. **Broadcasts the same data to all configured simulators simultaneously**
+
+Both GSPro and Open Shot Golf (or any OpenConnect-compatible simulator) receive identical launch data and run their own physics calculations independently.
+
+### Configuration
+
+Enable dual simulator support in your `settings.json`:
+
+```json
+{
+  "openConnect": {
+    "ip": "127.0.0.1",
+    "port": 921         // GSPro (default)
+  },
+  "secondaryOpenConnect": {
+    "enabled": true,    // Set to true to enable dual broadcasting
+    "ip": "127.0.0.1",
+    "port": 49152       // Open Shot Golf
+  }
+}
+```
+
+**Port Reference:**
+- **GSPro**: Port `921`
+- **Open Shot Golf (OSG)**: Port `49152`
+
+**Requirements:**
+- Both simulator applications must be running
+- Both must be listening on their respective ports
+- The adapter will automatically broadcast to all enabled connections
+
+This feature is perfect for:
+- Comparing simulator accuracy
+- Testing different physics engines
+- Running practice sessions on multiple platforms
+- Validating shot data consistency
 
 ## Using Direct Bluetooth Connector
 
@@ -36,7 +88,7 @@ To use the direct bluetooth connection on Windows:
 To use the direct bluetooth connection on Linux:
 - Enable bluetooth in `settings.json` file
 - Set the `bluetooth.platform` option to `"linux"`
-- **Set the `bluetoothDeviceAddress` to your R10's MAC address** (e.g., `"F4:9D:AA:D0:05:05"`)
+- **Set the `bluetoothDeviceAddress` to your R10's MAC address** (e.g., `"**:**:AA:D0:**:**"`)
   - Find your R10's MAC address using `bluetoothctl` or similar tool
   - Set device in pairing mode (blue blinking light) by holding power button for few seconds
   - Scan for devices: `bluetoothctl scan on`
@@ -71,6 +123,70 @@ In order to use the putting integration you must
   - Webcam putting integration with https://github.com/alleexx/cam-putting-py
 
 
+## Building from Source
+
+The project includes automated build scripts for both Windows and Linux/macOS that create self-contained executables.
+
+### Quick Build
+
+**Windows (PowerShell):**
+```powershell
+.\assets\scripts\build.ps1
+```
+
+**Linux/macOS (Bash):**
+```bash
+./assets/scripts/build.sh
+```
+
+These commands will create a self-contained executable in `bin/Release/publish/<runtime>/` that includes the .NET runtime and can run on systems without .NET installed.
+
+### Build Script Options
+
+**Windows Options:**
+```powershell
+# Build for Windows x64 (default)
+.\assets\scripts\build.ps1
+
+# Build for Windows ARM64
+.\assets\scripts\build.ps1 -Runtime win-arm64
+
+# Debug build
+.\assets\scripts\build.ps1 -Configuration Debug
+
+# Cross-compile for Linux
+.\assets\scripts\build.ps1 -Runtime linux-x64
+```
+
+**Linux/macOS Options:**
+```bash
+# Build for Linux x64 (default)
+./assets/scripts/build.sh
+
+# Build for Raspberry Pi (ARM64)
+./assets/scripts/build.sh --runtime linux-arm64
+
+# Debug build
+./assets/scripts/build.sh --configuration Debug
+
+# See all options
+./assets/scripts/build.sh --help
+```
+
+**Available Runtime Identifiers:**
+- `win-x64` - Windows 64-bit (Intel/AMD)
+- `win-arm64` - Windows ARM64
+- `linux-x64` - Linux 64-bit (Intel/AMD)
+- `linux-arm64` - Linux ARM64 (Raspberry Pi, etc.)
+
+**Output Location:**
+- Windows: `bin\Release\publish\win-x64\gspro-r10.exe`
+- Linux: `bin/Release/publish/linux-x64/gspro-r10`
+
+The `settings.json` file is automatically copied to the output directory.
+
+For detailed build documentation, see [assets/scripts/BUILD.md](assets/scripts/BUILD.md).
+
 ## Running
 
 ### From release
@@ -81,8 +197,15 @@ In order to use the putting integration you must
 
 ### From Source
 
-- Install a dotnet 9 sdk if you don't have one already
-- `dotnet run` from project directory
+**Option 1: Build and Run (Recommended)**
+
+Use the build scripts to create a standalone executable:
+- See [Building from Source](#building-from-source) section above
+
+**Option 2: Direct Execution with dotnet**
+
+- Install a dotnet 9 SDK if you don't have one already
+- Run `dotnet run` from the project directory
 - You can force the simulator target with `dotnet run -- --sim gspro` or `dotnet run -- --sim osg` (the `--` separates app args from dotnet)
 - Without the flag, the simulator is inferred from `openConnect.port` in `settings.json` (`49152` => OpenShotGolf, `921` => GSPro)
 
