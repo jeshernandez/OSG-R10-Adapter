@@ -16,7 +16,7 @@
     "sendStatusChangesToGSP": false, // send device readiness updates to gsp (does nothing as of today)
     "autoWake": true, // wake device if falls asleep
     "calibrateTiltOnConnect": true, // recalibrate tilt at the start of every session
-    "debugLogging": true,
+    "debugLogging": false,
     "altitude": 0, // feet
     "humidity": 0.5,  // percent (0 - 1)
     "temperature": 60, // fahrenheit 

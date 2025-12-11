@@ -98,30 +98,25 @@ namespace gspro_r10.bluetooth
 
     private async Task<bool> SetupInternalAsync()
     {
-      BluetoothLogger.Info("Linux Base: Getting device info service");
       if (DebugLogging)
         BaseLogger.LogDebug($"Getting device info service");
       var deviceInfoService = await AwaitGattAsync(Device.GetServiceAsync(DEVICE_INFO_SERVICE_UUID.ToString().ToLowerInvariant()), "device info service");
 
-      BluetoothLogger.Info("Linux Base: Reading serial number");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading serial number");
       GattCharacteristic serialCharacteristic = await AwaitGattAsync(deviceInfoService.GetCharacteristicAsync(SERIAL_NUMBER_CHARACTERISTIC_UUID.ToString().ToLowerInvariant()), "serial characteristic");
       Serial = Encoding.ASCII.GetString((await AwaitGattAsync(serialCharacteristic.ReadValueAsync(GattTimeout), "serial read")).ToArray());
 
-      BluetoothLogger.Info("Linux Base: Reading firmware version");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading firmware version");
       GattCharacteristic firmwareCharacteristic = await AwaitGattAsync(deviceInfoService.GetCharacteristicAsync(FIRMWARE_CHARACTERISTIC_UUID.ToString().ToLowerInvariant()), "firmware characteristic");
       Firmware = Encoding.ASCII.GetString((await AwaitGattAsync(firmwareCharacteristic.ReadValueAsync(GattTimeout), "firmware read")).ToArray());
 
-      BluetoothLogger.Info("Linux Base: Reading model name");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading model name");
       GattCharacteristic modelCharacteristic = await AwaitGattAsync(deviceInfoService.GetCharacteristicAsync(MODEL_CHARACTERISTIC_UUID.ToString().ToLowerInvariant()), "model characteristic");
       Model = Encoding.ASCII.GetString((await AwaitGattAsync(modelCharacteristic.ReadValueAsync(GattTimeout), "model read")).ToArray());
 
-      BluetoothLogger.Info("Linux Base: Reading battery characteristic");
       if (DebugLogging)
         BaseLogger.LogDebug($"Reading battery life");
       var batteryService = await AwaitGattAsync(Device.GetServiceAsync(BATTERY_SERVICE_UUID.ToString().ToLowerInvariant()), "battery service");
@@ -137,7 +132,6 @@ namespace gspro_r10.bluetooth
 
       await AwaitGattAsync(batteryCharacteristic.StartNotifyAsync(), "battery notifications");
 
-      BluetoothLogger.Info("Linux Base: Preparing device interface service");
       if (DebugLogging)
         BaseLogger.LogDebug($"Setting up device interface service");
       var deviceInterfaceService = await AwaitGattAsync(Device.GetServiceAsync(DEVICE_INTERFACE_SERVICE.ToString().ToLowerInvariant()), "device interface service");
@@ -175,7 +169,8 @@ namespace gspro_r10.bluetooth
     {
       try
       {
-        BluetoothLogger.Info($"Linux GATT: Waiting for {description}");
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Linux GATT: Waiting for {description}");
         return await task.WaitAsync(GattTimeout);
       }
       catch (Exception ex)
@@ -257,8 +252,12 @@ namespace gspro_r10.bluetooth
       {
         if (mWriterQueue.Count > 0)
         {
-          // Fire-and-forget, matching Windows behavior
-          _ = mGattWriter?.WriteValueAsync(mWriterQueue.Dequeue(), new Dictionary<string, object>());
+          // Try with response type to match Windows WriteValueWithResponseAsync behavior
+          var options = new Dictionary<string, object>
+          {
+            ["type"] = "request" // Request a response from the device
+          };
+          _ = mGattWriter?.WriteValueAsync(mWriterQueue.Dequeue(), options);
         }
         else
         {
@@ -346,10 +345,15 @@ namespace gspro_r10.bluetooth
       }
       else if (hex.StartsWith("B313")) // all protobuf requests
       {
+        if (DebugLogging)
+          BaseLogger.LogDebug($"B313 protobuf request received from device!");
+
         ackBody.AddRange(msg[2..4]);
         ackBody.AddRange("00000000000000".ToByteArray());
         Task.Run(() => {
           var request = WrapperProto.Parser.ParseFrom(msg.Skip(16).ToArray());
+          if (DebugLogging)
+            BaseLogger.LogDebug($"Parsed protobuf: {request}");
           MessageRecieved?.Invoke(this, new MessageEventArgs() { Message = request} );
           HandleProtobufRequest(request);
         });

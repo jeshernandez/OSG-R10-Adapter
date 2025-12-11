@@ -3,3 +3,5 @@ obj
 .vscode
 ball_tracking
 publish
+
+*.claude

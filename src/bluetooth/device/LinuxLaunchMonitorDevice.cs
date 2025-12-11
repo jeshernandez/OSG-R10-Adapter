@@ -20,6 +20,7 @@ namespace gspro_r10.bluetooth
     internal static Guid STATUS_CHARACTERISTIC_UUID = Guid.Parse("6A4E3403-667B-11E3-949A-0800200C9A66");
 
     private HashSet<uint> ProcessedShotIDs = new HashSet<uint>();
+    private RawMeasurementParser measurementParser = new RawMeasurementParser();
 
     private StateType _currentState;
     public StateType CurrentState { 
@@ -79,53 +80,57 @@ public override async Task<bool> Setup()
 {
   try
   {
-    BluetoothLogger.Info("Linux LM: Preparing measurement service");
-
     if (DebugLogging)
+    {
       BaseLogger.LogDebug("Subscribing to measurement service");
 
-    try
-    {
-      var properties = await Device.GetPropertiesAsync();
-      if (properties.UUIDs != null && properties.UUIDs.Length > 0)
+      try
       {
-        BluetoothLogger.Info("Linux LM: Device advertised services:");
-        foreach (string uuid in properties.UUIDs)
-          BluetoothLogger.Info($"  - {uuid}");
+        var properties = await Device.GetPropertiesAsync();
+        if (properties.UUIDs != null && properties.UUIDs.Length > 0)
+        {
+          BaseLogger.LogDebug("Device advertised services:");
+          foreach (string uuid in properties.UUIDs)
+            BaseLogger.LogDebug($"  - {uuid}");
+        }
       }
-      else
+      catch (Exception ex)
       {
-        BluetoothLogger.Info("Linux LM: Device reported no service UUIDs.");
+        BaseLogger.LogDebug($"Failed to read device UUID list: {ex.Message}");
       }
-    }
-    catch (Exception ex)
-    {
-      BluetoothLogger.Error($"Linux LM: Failed to read device UUID list: {ex.Message}");
     }
 
     // Measurement service (6a4e3400-...)
     var measurementUuid = MEASUREMENT_SERVICE_UUID.ToString().ToLowerInvariant();
-    BluetoothLogger.Info($"Linux LM: Requesting measurement service {measurementUuid}");
     var measService = await Device.GetServiceAsync(measurementUuid);
-    BluetoothLogger.Info($"Linux LM: Measurement service path {measService.ObjectPath}");
 
     var measCharacteristicUuid = MEASUREMENT_CHARACTERISTIC_UUID.ToString().ToLowerInvariant();
-    BluetoothLogger.Info($"Linux LM: Requesting measurement characteristic {measCharacteristicUuid}");
     var measCharacteristic = await measService.GetCharacteristicAsync(measCharacteristicUuid);
 
     // Start measurement notifications
     await measCharacteristic.StartNotifyAsync();
-    BluetoothLogger.Info("Linux LM: Measurement notifications started");
 
-    // Raw shot payloads come in here – hook up handler
+    // Raw shot payloads come in here – parse and process them
     measCharacteristic.Value += (o, e) =>
     {
-      // If you want to debug shots:
-      // BluetoothLogger.Info($"Linux LM: Shot bytes {BitConverter.ToString(e.Value)}");
+      // Parse the raw binary data to extract shot metrics
+      var metrics = measurementParser.ProcessPacket(e.Value);
+      if (metrics != null)
+      {
+        if (ProcessedShotIDs.Contains(metrics.ShotId))
+        {
+          BluetoothLogger.Error($"Received duplicate shot data {metrics.ShotId}. Ignoring");
+        }
+        else
+        {
+          ProcessedShotIDs.Add(metrics.ShotId);
+          ShotMetrics?.Invoke(this, new MetricsEventArgs() { Metrics = metrics });
+        }
+      }
+
       return Task.CompletedTask;
     };
 
-    BluetoothLogger.Info("Linux LM: Subscribing to control service");
     if (DebugLogging)
       BaseLogger.LogDebug("Subscribing to control service");
 
@@ -135,10 +140,15 @@ public override async Task<bool> Setup()
 
     await controlPoint.StartNotifyAsync();
 
-    // Response from device through controlPoint – unused for now
-    controlPoint.Value += (o, e) => Task.CompletedTask;
+    // Control point responses (protobuf B413 responses don't work on Linux/BlueZ)
+    // All necessary data comes through the measurement characteristic instead
+    controlPoint.Value += (o, e) =>
+    {
+      // BlueZ does not receive protobuf responses here like Windows does
+      // Leaving handler registered in case future BlueZ versions support it
+      return Task.CompletedTask;
+    };
 
-    BluetoothLogger.Info("Linux LM: Subscribing to status service");
     if (DebugLogging)
       BaseLogger.LogDebug("Subscribing to status service");
 
@@ -159,43 +169,40 @@ public override async Task<bool> Setup()
           BluetoothLogger.Info($"Linux LM: Status update: Awake={isAwake}, Ready={isReady}");
       }
 
-      // Old auto-wake logic left commented as in your original
-      // if (!isAwake)
-      // {
-      //   controlPoint.WriteValueWithResponseAsync(new byte[] { 0x00 }).Wait();
-      // }
       return Task.CompletedTask;
     };
 
-    BluetoothLogger.Info("Linux LM: Measurement subscriptions complete, running base setup");
+    if (DebugLogging)
+      BaseLogger.LogDebug("Measurement subscriptions complete, running base setup");
 
     bool baseSetupSuccess = await base.Setup();
     if (!baseSetupSuccess)
       throw new Exception("Error during base device setup");
 
-    BluetoothLogger.Info("Linux LM: Base setup complete, sending wake request");
+    // Send requests without waiting for responses - Linux uses async notifications
     WakeDevice();
+    StatusRequest();
+    GetDeviceTilt();
+    SubscribeToAlerts();
 
-    CurrentState = StatusRequest() ?? StateType.Error;
-    DeviceTilt = GetDeviceTilt();
-
-    // Subscribe to alerts
-    var alertStatus = SubscribeToAlerts();
-    if (alertStatus.Count == 0)
-      BluetoothLogger.Error("Linux LM: Failed to subscribe to alerts - device may not send notifications");
+    // Set a default state for now since we don't get synchronous responses
+    CurrentState = StateType.Waiting; // Assume waiting/ready state
 
     if (CalibrateTiltOnConnect)
     {
-      BluetoothLogger.Info("Linux LM: Calibrating tilt on connect");
+      if (DebugLogging)
+        BaseLogger.LogDebug("Calibrating tilt on connect");
       StartTiltCalibration();
     }
 
-    BluetoothLogger.Info("Linux LM: Setup finished successfully");
+    BluetoothLogger.Info("R10 connected and ready");
     return true;
   }
   catch (Exception ex)
   {
-    BluetoothLogger.Error($"Linux LM: Setup failed: {ex}");
+    BluetoothLogger.Error($"R10 setup failed: {ex.Message}");
+    if (DebugLogging)
+      BaseLogger.LogDebug(ex.ToString());
     return false;
   }
 }
@@ -205,12 +212,13 @@ public override async Task<bool> Setup()
     {
       try
       {
-        BluetoothLogger.Info($"Linux LM: Waiting for {description}");
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Waiting for {description}");
         return task.WaitAsync(GattTimeout).GetAwaiter().GetResult();
       }
       catch (Exception ex)
       {
-        BluetoothLogger.Error($"Linux LM: {description} failed - {ex.Message}");
+        BluetoothLogger.Error($"{description} failed - {ex.Message}");
         throw;
       }
     }
@@ -219,12 +227,13 @@ public override async Task<bool> Setup()
     {
       try
       {
-        BluetoothLogger.Info($"Linux LM: Waiting for {description}");
+        if (DebugLogging)
+          BaseLogger.LogDebug($"Waiting for {description}");
         task.WaitAsync(GattTimeout).GetAwaiter().GetResult();
       }
       catch (Exception ex)
       {
-        BluetoothLogger.Error($"Linux LM: {description} failed - {ex.Message}");
+        BluetoothLogger.Error($"{description} failed - {ex.Message}");
         throw;
       }
     }
