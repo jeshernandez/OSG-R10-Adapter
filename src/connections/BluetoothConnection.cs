@@ -33,6 +33,18 @@ namespace gspro_r10
       ReconnectInterval = int.Parse(configuration["reconnectInterval"] ?? "5");
       platform = ParsePlatform(configuration["platform"]);
 
+      // OS detection: warn if running on Linux but configured for Windows
+      if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(System.Runtime.InteropServices.OSPlatform.Linux))
+      {
+        if (platform == BluetoothPlatform.Windows)
+        {
+          BluetoothLogger.Error("CONFIGURATION ERROR: Running on Linux but settings.json has bluetooth.platform=\"windows\"");
+          BluetoothLogger.Error("Please change bluetooth.platform to \"linux\" in settings.json");
+          Environment.Exit(0);
+          //throw new InvalidOperationException("Platform mismatch: Linux OS detected but bluetooth.platform is set to 'windows' in settings.json. Please change to 'linux'.");
+        }
+      }
+
       if (platform == BluetoothPlatform.Linux)
       {
         linuxAdapter = new BlueZBluetoothAdapter(this, configuration);

@@ -147,6 +147,12 @@ namespace gspro_r10.bluetooth
       // Register event handler BEFORE starting notifications
       deviceInterfaceNotifier.Value += (o, e) =>
       {
+        // Debug: log all data from device interface notifier to catch B413 messages
+        if (e.Value.Length >= 2)
+        {
+          string prefix = $"{e.Value[0]:X2}{e.Value[1]:X2}";
+          BluetoothLogger.Info($"DevIntf notifier: len={e.Value.Length} prefix={prefix} data={BitConverter.ToString(e.Value)}");
+        }
         ReadBytes(e.Value);
         return Task.CompletedTask;
       };
@@ -197,6 +203,8 @@ namespace gspro_r10.bluetooth
     private void ReaderThread()
     {
       List<byte> currentMessage = new List<byte>();
+      List<byte> fragmentBuffer = new List<byte>();
+      bool inFragmentSequence = false;
 
       while (!mCancellationToken.IsCancellationRequested)
       {
@@ -213,28 +221,116 @@ namespace gspro_r10.bluetooth
             continue;
           }
 
+          // BLE fragmentation handling for Linux
+          // Packets with header=0x19 (25) appear to be fragmented BLE notifications
+          // Strip the fragment type/sequence byte (second byte after header)
+          if (header == 0x19 && msg.Count() > 0)
+          {
+            byte fragmentType = msg.First();
+            msg = msg.Skip(1);  // Strip fragment type byte
+
+            if (DebugLogging)
+              BaseLogger.LogDebug($"   BLE Fragment: type=0x{fragmentType:X2}, payload={msg.Count()} bytes");
+
+            // Fragment type 0x00 = start of new message
+            if (fragmentType == 0x00)
+            {
+              // Only clear if this is actually a NEW sequence (not a duplicate)
+              if (fragmentBuffer.Count > 0)
+              {
+                if (DebugLogging)
+                  BaseLogger.LogDebug($"   WARNING: Fragment 0x00 but buffer not empty ({fragmentBuffer.Count} bytes)! Duplicate packet?");
+              }
+              fragmentBuffer.Clear();
+              inFragmentSequence = true;
+              if (DebugLogging)
+                BaseLogger.LogDebug($"   Fragment START (0x00) - clearing fragment buffer");
+            }
+
+            // Accumulate fragment payload (but skip if it looks like device info spam)
+            // Device info fragments have ASCII text like "Approach R10"
+            bool looksLikeDeviceInfo = fragmentType == 0x41 || fragmentType == 0x63;
+            if (!looksLikeDeviceInfo && inFragmentSequence)
+            {
+              fragmentBuffer.AddRange(msg);
+              if (DebugLogging)
+                BaseLogger.LogDebug($"   Accumulated {msg.Count()} bytes -> fragment buffer now {fragmentBuffer.Count} bytes");
+            }
+            else if (looksLikeDeviceInfo)
+            {
+              if (DebugLogging)
+                BaseLogger.LogDebug($"   SKIP suspected device info fragment (type=0x{fragmentType:X2})");
+            }
+
+            // Check if ANY fragment ends the sequence (trailing 0x00), even if we skipped its data
+            bool fragmentHasEndMarker = msg.Count() > 0 && msg.Last() == 0x00;
+            if (fragmentHasEndMarker && inFragmentSequence)
+            {
+              if (DebugLogging)
+              {
+                BaseLogger.LogDebug($"   Fragment END marker (trailing 0x00) - finalizing message");
+                BaseLogger.LogDebug($"   fragmentBuffer state BEFORE finalize: {fragmentBuffer.Count} bytes");
+              }
+
+              // Use the accumulated fragments as the message, add trailing 0x00
+              fragmentBuffer.Add(0x00);
+              msg = fragmentBuffer.ToList(); // Create a copy to avoid reference issues
+              fragmentBuffer.Clear();
+              inFragmentSequence = false;
+
+              if (DebugLogging)
+                BaseLogger.LogDebug($"   Reassembled message: {msg.Count()} bytes total");
+
+              // Fall through to existing message processing logic below
+            }
+            else if (inFragmentSequence)
+            {
+              // Still accumulating fragments, don't process yet
+              continue;
+            }
+            else
+            {
+              // Fragment outside of a sequence, skip it
+              continue;
+            }
+          }
+
+          // Original message processing logic (for non-fragmented or reassembled messages)
           bool readComplete = false;
 
           if (msg.Last() == 0x00)
           {
             readComplete = true;
             msg = msg.SkipLast(1);
+            if (DebugLogging)
+              BaseLogger.LogDebug($"   Message ends with 0x00 -> readComplete=true");
           }
           if (msg.Count() > 0 && msg.First() == 0x00)
           {
+            if (DebugLogging)
+              BaseLogger.LogDebug($"   Message starts with 0x00 -> clearing buffer and skipping it");
             currentMessage.Clear();
             msg = msg.Skip(1);
+          }
+          if (DebugLogging && msg.Count() > 0)
+          {
+            BaseLogger.LogDebug($"   Adding {msg.Count()} bytes to buffer: {msg.ToArray().ToHexString()}");
+            BaseLogger.LogDebug($"   Buffer size before add: {currentMessage.Count}, readComplete={readComplete}");
           }
           currentMessage.AddRange(msg);
 
           if (readComplete && currentMessage.Count > 0)
           {
             if (DebugLogging)
+            {
+              BaseLogger.LogDebug($"  DECODING: buffer has {currentMessage.Count} bytes");
               BaseLogger.LogDebug($"  -> {currentMessage.ToHexString().PadRight(44)} (encoded)");
+            }
             byte[] decoded = COBS.Decode(currentMessage.ToArray()).ToArray();
             if (DebugLogging)
               BaseLogger.LogDebug($"-> {decoded.ToHexString().PadRight(46)} (decoded)");
-            mMsgProcessQueue.Enqueue(decoded);
+            if (decoded.Length > 0)
+              mMsgProcessQueue.Enqueue(decoded);
             mMsgProcessSignal.Set();
             currentMessage.Clear();
           }
@@ -321,7 +417,40 @@ namespace gspro_r10.bluetooth
       }
       else if (hex.StartsWith("BA13"))
       {
-        // config
+        // Tilt response - parse roll and pitch from bytes 4-7 and 8-11 as little-endian IEEE-754 floats
+        if (msg.Length >= 2 && msg[0] == 0xBA && msg[1] == 0x13)
+        {
+          BluetoothLogger.Info($"BA13 msg len={msg.Length} hex={BitConverter.ToString(msg)}");
+
+          // Try different encodings
+          BluetoothLogger.Info("=== Trying different decodings ===");
+
+          // Try as 16-bit integers (scaled)
+          if (msg.Length >= 8)
+          {
+            short val1 = BitConverter.ToInt16(msg, 4);
+            short val2 = BitConverter.ToInt16(msg, 6);
+            BluetoothLogger.Info($"  int16@4-5: {val1}, int16@6-7: {val2}");
+            BluetoothLogger.Info($"  scaled /100: {val1/100.0f}, {val2/100.0f}");
+            BluetoothLogger.Info($"  scaled /1000: {val1/1000.0f}, {val2/1000.0f}");
+          }
+
+          // Try as 32-bit integers (scaled)
+          if (msg.Length >= 12)
+          {
+            int val1 = BitConverter.ToInt32(msg, 4);
+            int val2 = BitConverter.ToInt32(msg, 8);
+            BluetoothLogger.Info($"  int32@4-7: {val1}, int32@8-11: {val2}");
+            BluetoothLogger.Info($"  scaled /1000000: {val1/1000000.0f}, {val2/1000000.0f}");
+          }
+
+          if (msg.Length >= 12)
+          {
+            float roll = BitConverter.ToSingle(msg, 4);
+            float pitch = BitConverter.ToSingle(msg, 8);
+            HandleTiltResponse(roll, pitch);
+          }
+        }
       }
       else if (hex.StartsWith("B413")) // all protobuf responses
       {
@@ -364,6 +493,11 @@ namespace gspro_r10.bluetooth
 
     public abstract void HandleProtobufRequest(IMessage request);
 
+    public virtual void HandleTiltResponse(float roll, float pitch)
+    {
+      // Override in derived class to handle tilt data
+    }
+
     private void AcknowledgeMessage(IEnumerable<byte> msg, IEnumerable<byte> respBody)
     {
       WriteMessage("8813".ToByteArray().Concat(msg.Take(2)).Concat(respBody).ToArray());
@@ -371,7 +505,7 @@ namespace gspro_r10.bluetooth
 
     public IMessage? SendProtobufRequest(IMessage proto)
     {
-      
+
       mProtoResponseResetEvent.Reset();
 
       byte[] bytes = proto.ToByteArray();
@@ -399,10 +533,32 @@ namespace gspro_r10.bluetooth
       }
     }
 
+    public void SendProtobufRequestNoWait(IMessage proto)
+    {
+      byte[] bytes = proto.ToByteArray();
+      int l = bytes.Length;
+      byte[] fullMsg = "B313".ToByteArray()
+        .Concat(BitConverter.GetBytes(mProtoRequestCounter))
+        .Append<byte>(0x00)
+        .Append<byte>(0x00)
+        .Concat(BitConverter.GetBytes(l))
+        .Concat(BitConverter.GetBytes(l))
+        .Concat(bytes)
+        .ToArray();
+
+      WriteMessage(fullMsg);
+      MessageSent?.Invoke(this, new MessageEventArgs(){ Message = proto });
+      mProtoRequestCounter++;
+    }
+
     private void ReadBytes(byte[] bytes)
     {
       if (DebugLogging)
+      {
         BaseLogger.LogDebug($"      -> {bytes.ToHexString().PadRight(40)} (ble read)");
+        if (bytes.Length >= 2)
+          BaseLogger.LogDebug($"         First 2 bytes: 0x{bytes[0]:X2} 0x{bytes[1]:X2}, remaining: {bytes.Length - 2}");
+      }
       mReaderQueue.Enqueue(bytes);
       mReaderSignal.Set();
     }

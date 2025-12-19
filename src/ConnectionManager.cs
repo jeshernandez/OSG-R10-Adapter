@@ -31,7 +31,12 @@ namespace gspro_r10
     public ConnectionManager(IConfigurationRoot configuration, SimulatorType? simulatorOverride = null)
     {
       this.simulatorOverride = simulatorOverride;
-      AddOpenConnectClient(configuration.GetSection("openConnect"));
+
+      IConfigurationSection openConnect = configuration.GetSection("openConnect");
+      if (bool.Parse(openConnect["enabled"] ?? "true"))
+      {
+        AddOpenConnectClient(openConnect);
+      }
 
       IConfigurationSection secondaryOpenConnect = configuration.GetSection("secondaryOpenConnect");
       if (bool.Parse(secondaryOpenConnect["enabled"] ?? "false"))

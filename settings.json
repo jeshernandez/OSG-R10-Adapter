@@ -1,5 +1,6 @@
 {
   "openConnect": {
+    "enabled": false,
     "ip": "127.0.0.1",
     "port": 921         // GSPro default port
   },
@@ -9,12 +10,12 @@
     "port": 49152       // OSG default port
   },
   "r10E6Server": {
-    "enabled": true,
+    "enabled": false,
     "port": 2483
   },
   "bluetooth": {
     "enabled": true, //bluetooth enabled
-    "platform": "windows", // bluetooth stack to use: windows or linux
+    "platform": "linux", // bluetooth stack to use: windows or linux
     "bluetoothDeviceName": "Approach R10",
     "bluetoothDeviceAddress": "F4:9D:AA:D0:05:05", // MAC required when platform=linux
     "reconnectInterval": 10, // seconds

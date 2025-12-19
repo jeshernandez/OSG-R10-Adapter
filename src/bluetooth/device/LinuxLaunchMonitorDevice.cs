@@ -144,6 +144,11 @@ public override async Task<bool> Setup()
     // All necessary data comes through the measurement characteristic instead
     controlPoint.Value += (o, e) =>
     {
+      // Debug: Check if tilt data comes through control point
+      if (e.Value.Length > 0)
+      {
+        BluetoothLogger.Info($"CONTROL POINT data: len={e.Value.Length} hex={BitConverter.ToString(e.Value)}");
+      }
       // BlueZ does not receive protobuf responses here like Windows does
       // Leaving handler registered in case future BlueZ versions support it
       return Task.CompletedTask;
@@ -277,51 +282,65 @@ public override async Task<bool> Setup()
         }
         if (notification.TiltCalibration != null)
         {
-          DeviceTilt = GetDeviceTilt();
+          BluetoothLogger.Info($"Tilt calibration result: {notification.TiltCalibration.Result}");
+          GetDeviceTilt();
         }
       }
     }
 
+    public override void HandleTiltResponse(float roll, float pitch)
+    {
+      DeviceTilt = new Tilt { Roll = roll, Pitch = pitch };
+      BluetoothLogger.Info($"Tilt updated: Roll={roll:F6}, Pitch={pitch:F6}");
+    }
+
     public Tilt? GetDeviceTilt()
     {
+      // TEST: Try waiting for B413 response like Windows does
+      BluetoothLogger.Info("Sending tilt request and waiting for B413 response...");
       IMessage? resp = SendProtobufRequest(
         new WrapperProto() { Service = new LaunchMonitorService() { TiltRequest = new TiltRequest() } }
       );
 
       if (resp is WrapperProto WrapperProtoResponse)
-        return WrapperProtoResponse.Service.TiltResponse.Tilt;
-      
+      {
+        BluetoothLogger.Info("Got B413 tilt response!");
+        DeviceTilt = WrapperProtoResponse.Service.TiltResponse.Tilt;
+        BluetoothLogger.Info($"Tilt from B413: Roll={DeviceTilt.Roll}, Pitch={DeviceTilt.Pitch}");
+        return DeviceTilt;
+      }
+      else
+      {
+        BluetoothLogger.Error($"GetDeviceTilt: No valid response! resp={(resp == null ? "null" : resp.GetType().Name)}");
+      }
+
       return null;
     }
 
     public ResponseStatus? WakeDevice()
     {
-      IMessage? resp = SendProtobufRequest(
+      SendProtobufRequestNoWait(
         new WrapperProto() { Service = new LaunchMonitorService() { WakeUpRequest = new WakeUpRequest() } }
       );
 
       BluetoothLogger.Info("Waking device...");
-      if (resp is WrapperProto WrapperProtoResponse)
-        return WrapperProtoResponse.Service.WakeUpResponse.Status;
-
+      // Response will come through HandleProtobufRequest as a B313 notification
       return null;
     }
 
     public StateType? StatusRequest()
     {
-      IMessage? resp = SendProtobufRequest(
+      SendProtobufRequestNoWait(
         new WrapperProto() { Service = new LaunchMonitorService() { StatusRequest = new StatusRequest() } }
       );
 
-      if (resp is WrapperProto WrapperProtoResponse)
-        return WrapperProtoResponse.Service.StatusResponse.State.State_;
-
-      return null;
+      // Response will come through HandleProtobufRequest as a B313 notification
+      return CurrentState;
     }
 
     public List<AlertStatusMessage> SubscribeToAlerts()
     {
-      IMessage? resp = SendProtobufRequest(
+      SendProtobufRequestNoWait(
         new WrapperProto()
         {
           Event = new EventSharing()
@@ -334,16 +353,14 @@ public override async Task<bool> Setup()
         }
       );
 
-      if (resp is WrapperProto WrapperProtoResponse)
-        return WrapperProtoResponse.Event.SubscribeRespose.AlertStatus.ToList();
-
+      // Response will come through HandleProtobufRequest as a B313 notification
       return new List<AlertStatusMessage>();
 
     }
 
     public bool ShotConfig(float temperature, float humidity, float altitude, float airDensity, float teeRange)
     {
-      IMessage? resp = SendProtobufRequest(new WrapperProto()
+      SendProtobufRequestNoWait(new WrapperProto()
       {
         Service = new LaunchMonitorService()
         {
@@ -358,33 +375,28 @@ public override async Task<bool> Setup()
         }
       });
 
-      if (resp is WrapperProto WrapperProtoResponse)
-        return WrapperProtoResponse.Service.ShotConfigResponse.Success;
-
-      return false;
+      // Response will come through HandleProtobufRequest as a B313 notification
+      return true;
     }
 
     public ResetTiltCalibrationResponse.Types.Status? ResetTiltCalibrartion(bool shouldReset = true)
     {
-      IMessage? resp = SendProtobufRequest(
+      SendProtobufRequestNoWait(
         new WrapperProto() { Service = new LaunchMonitorService() { ResetTiltCalRequest = new ResetTiltCalibrationRequest() { ShouldReset = shouldReset } } }
       );
 
-      if (resp is WrapperProto WrapperProtoResponse)
-        return WrapperProtoResponse.Service.ResetTiltCalResponse.Status;
-
+      // Response will come through HandleProtobufRequest as a B313 notification
       return null;
     }
 
     public StartTiltCalibrationResponse.Types.CalibrationStatus? StartTiltCalibration(bool shouldReset = true)
     {
-      IMessage? resp = SendProtobufRequest(
+      SendProtobufRequestNoWait(
         new WrapperProto() { Service = new LaunchMonitorService() { StartTiltCalRequest = new StartTiltCalibrationRequest() } }
       );
 
-      if (resp is WrapperProto WrapperProtoResponse)
-        return WrapperProtoResponse.Service.StartTiltCalResponse.Status;
-
+      BluetoothLogger.Info("Starting tilt calibration...");
+      // Calibration notification will come through HandleProtobufRequest as a B313 notification
       return null;
     }
 

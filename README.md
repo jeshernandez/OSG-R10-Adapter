@@ -43,6 +43,7 @@ Enable dual simulator support in your `settings.json`:
 ```json
 {
   "openConnect": {
+    "enabled": true,    // Set to false to disable main connection
     "ip": "127.0.0.1",
     "port": 921         // GSPro (default)
   },
