@@ -19,6 +19,7 @@ namespace gspro_r10.bluetooth
     internal static Guid STATUS_CHARACTERISTIC_UUID = Guid.Parse("6A4E3403-667B-11E3-949A-0800200C9A66");
 
     private HashSet<uint> ProcessedShotIDs = new HashSet<uint>();
+    private readonly RawMeasurementParser rawMeasurementParser = new RawMeasurementParser();
 
     private StateType _currentState;
     public StateType CurrentState { 
@@ -113,6 +114,9 @@ namespace gspro_r10.bluetooth
           var payload = e.Value.Skip(6).ToArray();
           BluetoothLogger.Info($"Windows Raw Measurement Payload: {BitConverter.ToString(payload)}");
         }
+
+        // Parse raw measurement packets using the Linux parser for cross-validation.
+        rawMeasurementParser.ProcessPacket(e.Value);
       };
       if (DebugLogging)
         BaseLogger.LogDebug("Subscribing to control service");
