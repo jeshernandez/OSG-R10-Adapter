@@ -156,7 +156,7 @@ namespace gspro_r10.bluetooth
 
         // Read all 9 int16 values first
         ushort val1 = ReadUInt16(combinedData, ref offset);
-        ushort val2 = ReadUInt16(combinedData, ref offset);
+        short val2 = ReadInt16(combinedData, ref offset); // Club path needs to support negatives
         short val3 = ReadInt16(combinedData, ref offset);
         ushort val4 = ReadUInt16(combinedData, ref offset);
         short val5 = ReadInt16(combinedData, ref offset);
@@ -173,12 +173,47 @@ namespace gspro_r10.bluetooth
         BluetoothLogger.Info($"  val4 (TotalSpin)={val4} rpm");
         BluetoothLogger.Info($"  val5 (SpinAxis)={val5} -> {val5/100.0f:F2}°");
         BluetoothLogger.Info($"  val6 (ClubSpeed)={val6} -> {val6/100.0f:F2}mph");
-        BluetoothLogger.Info($"  val7 (AttackAngle)={val7} -> {val7/100.0f:F2}°");
-        BluetoothLogger.Info($"  val8 (LaunchAngle)={val8} -> {val8/100.0f:F2}°");
+        BluetoothLogger.Info($"  val7 (Field7)={val7} -> {val7/100.0f:F2}");
+        BluetoothLogger.Info($"  val8 (Field8)={val8} -> {val8/100.0f:F2}");
         BluetoothLogger.Info($"  val9 (ClubFace)={val9} -> {val9/100.0f:F2}°");
 
+        // Two candidate interpretations for VLA/AoA; pick the more plausible one
+        float launchAngleA = -val7 / 100.0f; // prior mapping
+        float attackAngleA = val8 / 100.0f;
+        float launchAngleB = val8 / 100.0f;  // alternate mapping
+        float attackAngleB = val7 / 100.0f;
+
+        bool plausibleA = launchAngleA >= -5 && launchAngleA <= 45 && Math.Abs(attackAngleA) <= 20;
+        bool plausibleB = launchAngleB >= -5 && launchAngleB <= 45 && Math.Abs(attackAngleB) <= 20;
+
+        float launchAngle = launchAngleA;
+        float attackAngle = attackAngleA;
+        string interpretation = "A";
+
+        if (!plausibleA && plausibleB)
+        {
+          launchAngle = launchAngleB;
+          attackAngle = attackAngleB;
+          interpretation = "B";
+        }
+        else if (plausibleA && plausibleB)
+        {
+          // If both are plausible, prefer the one with the smaller |attack| (more typical)
+          if (Math.Abs(attackAngleB) < Math.Abs(attackAngleA))
+          {
+            launchAngle = launchAngleB;
+            attackAngle = attackAngleB;
+            interpretation = "B";
+          }
+        }
+        else if (!plausibleA && !plausibleB)
+        {
+          // Both look odd; keep A but mark it
+          interpretation = "A (unbounded)";
+        }
+
         // Log parsed values
-        BluetoothLogger.Info($"Raw Parser: Ball={val1/100.0f:F1}mph, Club={val6/100.0f:F1}mph, LA={val8/100.0f:F1}°, LD={-val3/100.0f:F1}°, Spin={val4}rpm");
+        BluetoothLogger.Info($"Raw Parser: Ball={val1/100.0f:F1}mph, Club={val6/100.0f:F1}mph, LA={launchAngle:F1}°, LD={-val3/100.0f:F1}°, Spin={val4}rpm, AoA={attackAngle:F1}° (interp {interpretation})");
 
         var metrics = new Metrics
         {
@@ -188,19 +223,22 @@ namespace gspro_r10.bluetooth
           ClubMetrics = new ClubMetrics()
         };
 
-        // Use Interpretation E (speeds in mph, val8 is launch angle, NEGATE launch direction)
-        // R10 sends speeds in mph * 100, but protobuf expects m/s
+        // Dynamic interpretation (A/B) based on plausibility:
+        // - speeds in mph * 100 (convert to m/s)
+        // - val7/val8 swapped and/or sign-flipped depending on the selected interpretation
+        // - val2 must be signed to allow negative club path
+        // - spin axis uses raw sign (GSPro conversion flips later)
         const float MPH_TO_MS = 0.44704f;
 
         metrics.BallMetrics.BallSpeed = (val1 / 100.0f) * MPH_TO_MS; // mph to m/s
-        metrics.BallMetrics.LaunchAngle = val8 / 100.0f; // val8 is launch angle
+        metrics.BallMetrics.LaunchAngle = launchAngle;
         metrics.BallMetrics.LaunchDirection = -val3 / 100.0f; // NEGATED - binary uses opposite sign
         metrics.BallMetrics.TotalSpin = val4;
-        metrics.BallMetrics.SpinAxis = val5 / 100.0f; // Note: Windows negates this in conversion to GSPro
+        metrics.BallMetrics.SpinAxis = val5 / 100.0f; // Keep raw sign; conversion to GSPro flips later
 
         metrics.ClubMetrics.ClubHeadSpeed = (val6 / 100.0f) * MPH_TO_MS; // mph to m/s
-        metrics.ClubMetrics.AttackAngle = val7 / 100.0f;
-        metrics.ClubMetrics.ClubAnglePath = val2 / 100.0f; // val2 is club path
+        metrics.ClubMetrics.AttackAngle = attackAngle;
+        metrics.ClubMetrics.ClubAnglePath = val2 / 100.0f; // val2 is club path (signed)
         metrics.ClubMetrics.ClubAngleFace = val9 / 100.0f;
 
         // Decode ball type and spin calculation from flags

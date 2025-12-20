@@ -83,8 +83,37 @@ namespace gspro_r10.bluetooth
         BluetoothLogger.Error("Error subscribing to measurement characteristic");
       }
 
-      // Bytes that come after each shot. No idea how to parse these
-      measCharacteristic.CharacteristicValueChanged += (o, e) => {};
+      // Raw measurement packets (useful for comparing Windows vs Linux)
+      measCharacteristic.CharacteristicValueChanged += (o, e) =>
+      {
+        if (!DebugLogging)
+          return;
+
+        if (e.Value == null || e.Value.Length == 0)
+        {
+          BluetoothLogger.Info("Windows Raw Measurement: empty notification");
+          return;
+        }
+
+        if (e.Value.Length >= 6)
+        {
+          byte packetType = e.Value[0];
+          byte sequenceOrFlags = e.Value[1];
+          uint shotId = BitConverter.ToUInt32(e.Value, 2);
+          BluetoothLogger.Info($"Windows Raw Measurement: type=0x{packetType:X2}, seq/flags=0x{sequenceOrFlags:X2}, shotId={shotId}, length={e.Value.Length}");
+        }
+        else
+        {
+          BluetoothLogger.Info($"Windows Raw Measurement: length={e.Value.Length}");
+        }
+
+        BluetoothLogger.Info($"Windows Raw Measurement Hex: {BitConverter.ToString(e.Value)}");
+        if (e.Value.Length > 6)
+        {
+          var payload = e.Value.Skip(6).ToArray();
+          BluetoothLogger.Info($"Windows Raw Measurement Payload: {BitConverter.ToString(payload)}");
+        }
+      };
       if (DebugLogging)
         BaseLogger.LogDebug("Subscribing to control service");
       GattCharacteristic controlPoint = measService.GetCharacteristicAsync(CONTROL_POINT_CHARACTERISTIC_UUID).WaitAsync(TimeSpan.FromSeconds(5)).Result;

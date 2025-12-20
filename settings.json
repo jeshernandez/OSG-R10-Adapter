@@ -1,12 +1,12 @@
 {
   "openConnect": {
     "ip": "127.0.0.1",
-    "port": 921         // GSPro default port
+    "port": 49152         // GSPro default port
   },
   "secondaryOpenConnect": {
-    "enabled": true,
+    "enabled": false,
     "ip": "127.0.0.1",
-    "port": 49152       // OSG default port
+    "port": 921       // OSG default port
   },
   "r10E6Server": {
     "enabled": true,
