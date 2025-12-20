@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Collections.Concurrent;
 using Google.Protobuf;
 using InTheHand.Bluetooth;
 using LaunchMonitor.Proto;
@@ -20,6 +21,8 @@ namespace gspro_r10.bluetooth
 
     private HashSet<uint> ProcessedShotIDs = new HashSet<uint>();
     private readonly RawMeasurementParser rawMeasurementParser = new RawMeasurementParser();
+    private readonly ConcurrentDictionary<uint, Metrics> rawMetricsByShot = new ConcurrentDictionary<uint, Metrics>();
+    private readonly ConcurrentDictionary<uint, Metrics> protoMetricsByShot = new ConcurrentDictionary<uint, Metrics>();
 
     private StateType _currentState;
     public StateType CurrentState { 
@@ -116,7 +119,12 @@ namespace gspro_r10.bluetooth
         }
 
         // Parse raw measurement packets using the Linux parser for cross-validation.
-        rawMeasurementParser.ProcessPacket(e.Value);
+        var rawMetrics = rawMeasurementParser.ProcessPacket(e.Value);
+        if (DebugLogging && rawMetrics != null)
+        {
+          rawMetricsByShot[rawMetrics.ShotId] = rawMetrics;
+          TryLogRawVsProto(rawMetrics.ShotId);
+        }
       };
       if (DebugLogging)
         BaseLogger.LogDebug("Subscribing to control service");
@@ -203,6 +211,12 @@ namespace gspro_r10.bluetooth
             ProcessedShotIDs.Add(notification.Metrics.ShotId);
             ShotMetrics?.Invoke(this, new MetricsEventArgs() { Metrics = notification.Metrics });
           }
+
+          if (DebugLogging)
+          {
+            protoMetricsByShot[notification.Metrics.ShotId] = notification.Metrics;
+            TryLogRawVsProto(notification.Metrics.ShotId);
+          }
         }
         if (notification.TiltCalibration != null)
         {
@@ -221,6 +235,33 @@ namespace gspro_r10.bluetooth
         return WrapperProtoResponse.Service.TiltResponse.Tilt;
       
       return null;
+    }
+
+    private void TryLogRawVsProto(uint shotId)
+    {
+      if (!DebugLogging)
+        return;
+
+      if (!rawMetricsByShot.TryGetValue(shotId, out var raw))
+        return;
+      if (!protoMetricsByShot.TryGetValue(shotId, out var proto))
+        return;
+
+      rawMetricsByShot.TryRemove(shotId, out _);
+      protoMetricsByShot.TryRemove(shotId, out _);
+
+      float? rawLa = raw.BallMetrics?.LaunchAngle;
+      float? protoLa = proto.BallMetrics?.LaunchAngle;
+      float? rawLd = raw.BallMetrics?.LaunchDirection;
+      float? protoLd = proto.BallMetrics?.LaunchDirection;
+      float? rawAoA = raw.ClubMetrics?.AttackAngle;
+      float? protoAoA = proto.ClubMetrics?.AttackAngle;
+
+      string Format(float? value) => value.HasValue ? value.Value.ToString("F4") : "null";
+      string Diff(float? a, float? b) => (a.HasValue && b.HasValue) ? (a.Value - b.Value).ToString("F4") : "null";
+
+      BluetoothLogger.Info($"Raw/Proto compare (shot {shotId}): VLA raw={Format(rawLa)} proto={Format(protoLa)} diff={Diff(rawLa, protoLa)}");
+      BluetoothLogger.Info($"Raw/Proto compare (shot {shotId}): HLA raw={Format(rawLd)} proto={Format(protoLd)} diff={Diff(rawLd, protoLd)} | AoA raw={Format(rawAoA)} proto={Format(protoAoA)} diff={Diff(rawAoA, protoAoA)}");
     }
 
     public ResponseStatus? WakeDevice()

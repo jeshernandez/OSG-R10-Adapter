@@ -150,7 +150,7 @@ namespace gspro_r10.bluetooth
 
         // DEBUG: Log raw bytes
         BluetoothLogger.Info($"Raw Parser: Shot {buffer.ShotId} - Combined data length: {combinedData.Length} bytes");
-        BluetoothLogger.Info($"Raw Parser: Hex: {BitConverter.ToString(combinedData)}");
+        BluetoothLogger.Info($"Raw Parser: Shot {buffer.ShotId} - Combined hex: {BitConverter.ToString(combinedData)}");
 
         int offset = 0;
 
@@ -166,6 +166,7 @@ namespace gspro_r10.bluetooth
         short val9 = ReadInt16(combinedData, ref offset);
 
         // DEBUG: Log all raw values before conversion
+        BluetoothLogger.Info($"Raw Parser: Shot {buffer.ShotId} - RawValues: val1={val1}, val2={val2}, val3={val3}, val4={val4}, val5={val5}, val6={val6}, val7={val7}, val8={val8}, val9={val9}");
         BluetoothLogger.Info($"Raw Parser: RAW VALUES:");
         BluetoothLogger.Info($"  val1 (BallSpeed)={val1} -> {val1/100.0f:F2}mph");
         BluetoothLogger.Info($"  val2 (ClubPath)={val2} -> {val2/100.0f:F2}°");
