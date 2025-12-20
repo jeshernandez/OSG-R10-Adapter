@@ -19,6 +19,7 @@ namespace gspro_r10.bluetooth
       public List<byte[]> Packets { get; set; } = new List<byte[]>();
       public DateTime LastUpdate { get; set; } = DateTime.UtcNow;
       public byte SecondPacketFlags { get; set; } = 0; // May contain ball type/spin calc flags
+      public bool IsMarkedBall { get; set; } = false; // True for 0x7E/0x3E packet types
     }
 
     /// <summary>
@@ -45,6 +46,9 @@ namespace gspro_r10.bluetooth
       // Extract shot ID (bytes 2-5, little-endian uint32)
       uint shotId = BitConverter.ToUInt32(data, 2);
 
+      // DEBUG: Log packet info
+      BluetoothLogger.Info($"Raw Parser: Received packet type=0x{packetType:X2}, seq/flags=0x{sequenceOrFlags:X2}, shotId={shotId}, length={data.Length}");
+
       // Handle different packet types
       if (packetType == 0xFF && sequenceOrFlags == 0x00)
       {
@@ -66,7 +70,8 @@ namespace gspro_r10.bluetooth
         var buffer = new ShotPacketBuffer
         {
           ShotId = shotId,
-          SecondPacketFlags = 0x0C // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          SecondPacketFlags = 0x0C, // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          IsMarkedBall = true
         };
         buffer.Packets.Add(data);
         return TryParseCompleteShot(buffer);
@@ -77,7 +82,8 @@ namespace gspro_r10.bluetooth
         var buffer = new ShotPacketBuffer
         {
           ShotId = shotId,
-          SecondPacketFlags = 0x0C // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          SecondPacketFlags = 0x0C, // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          IsMarkedBall = true
         };
         buffer.Packets.Add(data);
         return TryParseCompleteShot(buffer);
@@ -145,11 +151,15 @@ namespace gspro_r10.bluetooth
           combinedData = paddedData;
         }
 
+        // DEBUG: Log raw bytes
+        BluetoothLogger.Info($"Raw Parser: Shot {buffer.ShotId} - Combined data length: {combinedData.Length} bytes");
+        BluetoothLogger.Info($"Raw Parser: Shot {buffer.ShotId} - Combined hex: {BitConverter.ToString(combinedData)}");
+
         int offset = 0;
 
         // Read all 9 int16 values first
         ushort val1 = ReadUInt16(combinedData, ref offset);
-        ushort val2 = ReadUInt16(combinedData, ref offset);
+        short val2 = ReadInt16(combinedData, ref offset); // Club path needs to support negatives
         short val3 = ReadInt16(combinedData, ref offset);
         ushort val4 = ReadUInt16(combinedData, ref offset);
         short val5 = ReadInt16(combinedData, ref offset);
@@ -158,8 +168,114 @@ namespace gspro_r10.bluetooth
         short val8 = ReadInt16(combinedData, ref offset);
         short val9 = ReadInt16(combinedData, ref offset);
 
+        // DEBUG: Log all raw values before conversion
+        BluetoothLogger.Info($"Raw Parser: Shot {buffer.ShotId} - RawValues: val1={val1}, val2={val2}, val3={val3}, val4={val4}, val5={val5}, val6={val6}, val7={val7}, val8={val8}, val9={val9}");
+        BluetoothLogger.Info($"Raw Parser: RAW VALUES:");
+        BluetoothLogger.Info($"  val1 (BallSpeed)={val1} -> {val1/100.0f:F2}mph");
+        BluetoothLogger.Info($"  val2 (ClubPath)={val2} -> {val2/100.0f:F2}°");
+        BluetoothLogger.Info($"  val3 (LaunchDir)={val3} -> {-val3/100.0f:F2}° (negated)");
+        BluetoothLogger.Info($"  val4 (TotalSpin)={val4} rpm");
+        BluetoothLogger.Info($"  val5 (SpinAxis)={val5} -> {val5/100.0f:F2}°");
+        BluetoothLogger.Info($"  val6 (ClubSpeed)={val6} -> {val6/100.0f:F2}mph");
+        BluetoothLogger.Info($"  val7 (Field7)={val7} -> {val7/100.0f:F2}");
+        BluetoothLogger.Info($"  val8 (Field8)={val8} -> {val8/100.0f:F2}");
+        BluetoothLogger.Info($"  val9 (ClubFace)={val9} -> {val9/100.0f:F2}°");
+
+        float launchAngle;
+        float attackAngle;
+        string interpretation;
+
+        if (buffer.IsMarkedBall)
+        {
+          // Marked ball packets (0x7E, 0x3E) have different field layout:
+          // - val1: Ball Speed
+          // - val2: VLA (Launch Angle)
+          // - val3: HLA (Launch Direction) - negated
+          // - val4: Total Spin
+          // - val5: Spin Axis
+          // - val6-val9: Not present (zeros)
+          launchAngle = val2 / 100.0f;
+          attackAngle = 0; // Not available for marked balls
+          interpretation = "MarkedBall";
+          BluetoothLogger.Info($"Raw Parser: Marked ball detected - using val2 as VLA");
+        }
+        else
+        {
+          // Conventional ball packets - two candidate interpretations for VLA/AoA
+          // AoA sign is flipped based on Windows raw vs protobuf comparison
+          bool IsPlausible(float la, float aoa) => la >= -5 && la <= 45 && Math.Abs(aoa) <= 20;
+
+          float launchAngleA = -val7 / 100.0f; // prior mapping
+          float attackAngleA = -val8 / 100.0f; // NEGATED
+          float launchAngleB = val8 / 100.0f;  // alternate mapping
+          float attackAngleB = -val7 / 100.0f; // NEGATED
+
+          bool plausibleA = IsPlausible(launchAngleA, attackAngleA);
+          bool plausibleB = IsPlausible(launchAngleB, attackAngleB);
+
+          launchAngle = launchAngleA;
+          attackAngle = attackAngleA;
+          interpretation = "A";
+
+          if (!plausibleA && plausibleB)
+          {
+            launchAngle = launchAngleB;
+            attackAngle = attackAngleB;
+            interpretation = "B";
+          }
+          else if (plausibleA && plausibleB)
+          {
+            // If both are plausible, prefer the one with the smaller |attack| (more typical)
+            if (Math.Abs(attackAngleB) < Math.Abs(attackAngleA))
+            {
+              launchAngle = launchAngleB;
+              attackAngle = attackAngleB;
+              interpretation = "B";
+            }
+          }
+          else if (!plausibleA && !plausibleB)
+          {
+            // Both look odd; rescale val7/val8 to bring angles into a plausible range.
+            float maxAbs = Math.Max(Math.Abs(val7), Math.Abs(val8));
+            float scale = Math.Max(100.0f, maxAbs / 20.0f);
+
+            float launchAngleAScaled = -val7 / scale;
+            float attackAngleAScaled = -val8 / scale;
+            float launchAngleBScaled = val8 / scale;
+            float attackAngleBScaled = -val7 / scale;
+
+            bool plausibleAScaled = IsPlausible(launchAngleAScaled, attackAngleAScaled);
+            bool plausibleBScaled = IsPlausible(launchAngleBScaled, attackAngleBScaled);
+
+            if (plausibleAScaled || plausibleBScaled)
+            {
+              if (!plausibleAScaled || (plausibleBScaled && Math.Abs(attackAngleBScaled) < Math.Abs(attackAngleAScaled)))
+              {
+                launchAngle = launchAngleBScaled;
+                attackAngle = attackAngleBScaled;
+                interpretation = $"B (scaled {scale:F1})";
+              }
+              else
+              {
+                launchAngle = launchAngleAScaled;
+                attackAngle = attackAngleAScaled;
+                interpretation = $"A (scaled {scale:F1})";
+              }
+            }
+            else
+            {
+              // Last resort: keep the smaller launch angle and zero AoA to avoid extreme apex.
+              launchAngle = Math.Abs(launchAngleA) <= Math.Abs(launchAngleB) ? launchAngleA : launchAngleB;
+              if (launchAngle < -5) launchAngle = -5;
+              if (launchAngle > 45) launchAngle = 45;
+              attackAngle = 0;
+              interpretation = "fallback";
+            }
+          }
+        }
+
         // Log parsed values
-        BluetoothLogger.Info($"Raw Parser: Ball={val1/100.0f:F1}mph, Club={val6/100.0f:F1}mph, LA={val8/100.0f:F1}°, LD={-val3/100.0f:F1}°, Spin={val4}rpm");
+        BluetoothLogger.Info($"Raw Parser: Ball={val1/100.0f:F1}mph, Club={val6/100.0f:F1}mph, LA={launchAngle:F1}°, LD={-val3/100.0f:F1}°, Spin={val4}rpm, AoA={attackAngle:F1}° (interp {interpretation})");
 
         var metrics = new Metrics
         {
@@ -169,25 +285,29 @@ namespace gspro_r10.bluetooth
           ClubMetrics = new ClubMetrics()
         };
 
-        // Use Interpretation E (speeds in mph, val8 is launch angle, NEGATE launch direction)
-        // R10 sends speeds in mph * 100, but protobuf expects m/s
+        // Dynamic interpretation (A/B) based on plausibility:
+        // - speeds in mph * 100 (convert to m/s)
+        // - val7/val8 swapped and/or sign-flipped depending on the selected interpretation
+        // - val2 must be signed to allow negative club path
+        // - spin axis uses raw sign (GSPro conversion flips later)
         const float MPH_TO_MS = 0.44704f;
 
         metrics.BallMetrics.BallSpeed = (val1 / 100.0f) * MPH_TO_MS; // mph to m/s
-        metrics.BallMetrics.LaunchAngle = val8 / 100.0f; // val8 is launch angle
+        metrics.BallMetrics.LaunchAngle = launchAngle;
         metrics.BallMetrics.LaunchDirection = -val3 / 100.0f; // NEGATED - binary uses opposite sign
         metrics.BallMetrics.TotalSpin = val4;
-        metrics.BallMetrics.SpinAxis = val5 / 100.0f; // Note: Windows negates this in conversion to GSPro
+        metrics.BallMetrics.SpinAxis = val5 / 100.0f; // Keep raw sign; conversion to GSPro flips later
 
         metrics.ClubMetrics.ClubHeadSpeed = (val6 / 100.0f) * MPH_TO_MS; // mph to m/s
-        metrics.ClubMetrics.AttackAngle = val7 / 100.0f;
-        metrics.ClubMetrics.ClubAnglePath = val2 / 100.0f; // val2 is club path
+        metrics.ClubMetrics.AttackAngle = attackAngle;
+        // For marked balls, val2 is VLA not ClubPath; club data not available
+        metrics.ClubMetrics.ClubAnglePath = buffer.IsMarkedBall ? 0 : val2 / 100.0f;
         metrics.ClubMetrics.ClubAngleFace = val9 / 100.0f;
 
         // Decode ball type and spin calculation from flags
         // Packet type determines ball type:
         // - 0xFF (two packets) = Conventional ball
-        // - 0x7E (one packet) = Marked ball
+        // - 0x7E/0x3E (one packet) = Marked ball
         //
         // For regular balls, flags byte 0x03 encodes spin calc in bits 2-3:
         // - Bits 2-3: Spin calculation type (0=ratio, 1=ball_flight, 2=other, 3=measured)
@@ -196,9 +316,10 @@ namespace gspro_r10.bluetooth
         byte flags = buffer.SecondPacketFlags;
         int spinCalcRaw = (flags >> 2) & 0x03; // Bits 2-3
 
-        // Ball type detection is unreliable in binary format - R10 doesn't distinguish
-        // Set to Unknown since the actual metrics are what matter, not metadata
-        var ballType = BallMetrics.Types.GolfBallType.Unknown;
+        // Ball type: Marked for 0x7E/0x3E packets, Conventional for 0xFF packets
+        var ballType = buffer.IsMarkedBall
+          ? BallMetrics.Types.GolfBallType.Marked
+          : BallMetrics.Types.GolfBallType.Conventional;
 
         // Map spin calc type (bits 2-3)
         var spinCalc = spinCalcRaw switch
