@@ -19,6 +19,7 @@ namespace gspro_r10.bluetooth
       public List<byte[]> Packets { get; set; } = new List<byte[]>();
       public DateTime LastUpdate { get; set; } = DateTime.UtcNow;
       public byte SecondPacketFlags { get; set; } = 0; // May contain ball type/spin calc flags
+      public bool IsMarkedBall { get; set; } = false; // True for 0x7E/0x3E packet types
     }
 
     /// <summary>
@@ -69,7 +70,8 @@ namespace gspro_r10.bluetooth
         var buffer = new ShotPacketBuffer
         {
           ShotId = shotId,
-          SecondPacketFlags = 0x0C // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          SecondPacketFlags = 0x0C, // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          IsMarkedBall = true
         };
         buffer.Packets.Add(data);
         return TryParseCompleteShot(buffer);
@@ -80,7 +82,8 @@ namespace gspro_r10.bluetooth
         var buffer = new ShotPacketBuffer
         {
           ShotId = shotId,
-          SecondPacketFlags = 0x0C // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          SecondPacketFlags = 0x0C, // Special flag for marked balls (bits 2-3 = 3 = MEASURED)
+          IsMarkedBall = true
         };
         buffer.Packets.Add(data);
         return TryParseCompleteShot(buffer);
@@ -178,39 +181,97 @@ namespace gspro_r10.bluetooth
         BluetoothLogger.Info($"  val8 (Field8)={val8} -> {val8/100.0f:F2}");
         BluetoothLogger.Info($"  val9 (ClubFace)={val9} -> {val9/100.0f:F2}°");
 
-        // Two candidate interpretations for VLA/AoA; pick the more plausible one
-        float launchAngleA = -val7 / 100.0f; // prior mapping
-        float attackAngleA = val8 / 100.0f;
-        float launchAngleB = val8 / 100.0f;  // alternate mapping
-        float attackAngleB = val7 / 100.0f;
+        float launchAngle;
+        float attackAngle;
+        string interpretation;
 
-        bool plausibleA = launchAngleA >= -5 && launchAngleA <= 45 && Math.Abs(attackAngleA) <= 20;
-        bool plausibleB = launchAngleB >= -5 && launchAngleB <= 45 && Math.Abs(attackAngleB) <= 20;
-
-        float launchAngle = launchAngleA;
-        float attackAngle = attackAngleA;
-        string interpretation = "A";
-
-        if (!plausibleA && plausibleB)
+        if (buffer.IsMarkedBall)
         {
-          launchAngle = launchAngleB;
-          attackAngle = attackAngleB;
-          interpretation = "B";
+          // Marked ball packets (0x7E, 0x3E) have different field layout:
+          // - val1: Ball Speed
+          // - val2: VLA (Launch Angle)
+          // - val3: HLA (Launch Direction) - negated
+          // - val4: Total Spin
+          // - val5: Spin Axis
+          // - val6-val9: Not present (zeros)
+          launchAngle = val2 / 100.0f;
+          attackAngle = 0; // Not available for marked balls
+          interpretation = "MarkedBall";
+          BluetoothLogger.Info($"Raw Parser: Marked ball detected - using val2 as VLA");
         }
-        else if (plausibleA && plausibleB)
+        else
         {
-          // If both are plausible, prefer the one with the smaller |attack| (more typical)
-          if (Math.Abs(attackAngleB) < Math.Abs(attackAngleA))
+          // Conventional ball packets - two candidate interpretations for VLA/AoA
+          // AoA sign is flipped based on Windows raw vs protobuf comparison
+          bool IsPlausible(float la, float aoa) => la >= -5 && la <= 45 && Math.Abs(aoa) <= 20;
+
+          float launchAngleA = -val7 / 100.0f; // prior mapping
+          float attackAngleA = -val8 / 100.0f; // NEGATED
+          float launchAngleB = val8 / 100.0f;  // alternate mapping
+          float attackAngleB = -val7 / 100.0f; // NEGATED
+
+          bool plausibleA = IsPlausible(launchAngleA, attackAngleA);
+          bool plausibleB = IsPlausible(launchAngleB, attackAngleB);
+
+          launchAngle = launchAngleA;
+          attackAngle = attackAngleA;
+          interpretation = "A";
+
+          if (!plausibleA && plausibleB)
           {
             launchAngle = launchAngleB;
             attackAngle = attackAngleB;
             interpretation = "B";
           }
-        }
-        else if (!plausibleA && !plausibleB)
-        {
-          // Both look odd; keep A but mark it
-          interpretation = "A (unbounded)";
+          else if (plausibleA && plausibleB)
+          {
+            // If both are plausible, prefer the one with the smaller |attack| (more typical)
+            if (Math.Abs(attackAngleB) < Math.Abs(attackAngleA))
+            {
+              launchAngle = launchAngleB;
+              attackAngle = attackAngleB;
+              interpretation = "B";
+            }
+          }
+          else if (!plausibleA && !plausibleB)
+          {
+            // Both look odd; rescale val7/val8 to bring angles into a plausible range.
+            float maxAbs = Math.Max(Math.Abs(val7), Math.Abs(val8));
+            float scale = Math.Max(100.0f, maxAbs / 20.0f);
+
+            float launchAngleAScaled = -val7 / scale;
+            float attackAngleAScaled = -val8 / scale;
+            float launchAngleBScaled = val8 / scale;
+            float attackAngleBScaled = -val7 / scale;
+
+            bool plausibleAScaled = IsPlausible(launchAngleAScaled, attackAngleAScaled);
+            bool plausibleBScaled = IsPlausible(launchAngleBScaled, attackAngleBScaled);
+
+            if (plausibleAScaled || plausibleBScaled)
+            {
+              if (!plausibleAScaled || (plausibleBScaled && Math.Abs(attackAngleBScaled) < Math.Abs(attackAngleAScaled)))
+              {
+                launchAngle = launchAngleBScaled;
+                attackAngle = attackAngleBScaled;
+                interpretation = $"B (scaled {scale:F1})";
+              }
+              else
+              {
+                launchAngle = launchAngleAScaled;
+                attackAngle = attackAngleAScaled;
+                interpretation = $"A (scaled {scale:F1})";
+              }
+            }
+            else
+            {
+              // Last resort: keep the smaller launch angle and zero AoA to avoid extreme apex.
+              launchAngle = Math.Abs(launchAngleA) <= Math.Abs(launchAngleB) ? launchAngleA : launchAngleB;
+              if (launchAngle < -5) launchAngle = -5;
+              if (launchAngle > 45) launchAngle = 45;
+              attackAngle = 0;
+              interpretation = "fallback";
+            }
+          }
         }
 
         // Log parsed values
@@ -239,13 +300,14 @@ namespace gspro_r10.bluetooth
 
         metrics.ClubMetrics.ClubHeadSpeed = (val6 / 100.0f) * MPH_TO_MS; // mph to m/s
         metrics.ClubMetrics.AttackAngle = attackAngle;
-        metrics.ClubMetrics.ClubAnglePath = val2 / 100.0f; // val2 is club path (signed)
+        // For marked balls, val2 is VLA not ClubPath; club data not available
+        metrics.ClubMetrics.ClubAnglePath = buffer.IsMarkedBall ? 0 : val2 / 100.0f;
         metrics.ClubMetrics.ClubAngleFace = val9 / 100.0f;
 
         // Decode ball type and spin calculation from flags
         // Packet type determines ball type:
         // - 0xFF (two packets) = Conventional ball
-        // - 0x7E (one packet) = Marked ball
+        // - 0x7E/0x3E (one packet) = Marked ball
         //
         // For regular balls, flags byte 0x03 encodes spin calc in bits 2-3:
         // - Bits 2-3: Spin calculation type (0=ratio, 1=ball_flight, 2=other, 3=measured)
@@ -254,9 +316,10 @@ namespace gspro_r10.bluetooth
         byte flags = buffer.SecondPacketFlags;
         int spinCalcRaw = (flags >> 2) & 0x03; // Bits 2-3
 
-        // Ball type detection is unreliable in binary format - R10 doesn't distinguish
-        // Set to Unknown since the actual metrics are what matter, not metadata
-        var ballType = BallMetrics.Types.GolfBallType.Unknown;
+        // Ball type: Marked for 0x7E/0x3E packets, Conventional for 0xFF packets
+        var ballType = buffer.IsMarkedBall
+          ? BallMetrics.Types.GolfBallType.Marked
+          : BallMetrics.Types.GolfBallType.Conventional;
 
         // Map spin calc type (bits 2-3)
         var spinCalc = spinCalcRaw switch
