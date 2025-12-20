@@ -45,6 +45,9 @@ namespace gspro_r10.bluetooth
       // Extract shot ID (bytes 2-5, little-endian uint32)
       uint shotId = BitConverter.ToUInt32(data, 2);
 
+      // DEBUG: Log packet info
+      BluetoothLogger.Info($"Raw Parser: Received packet type=0x{packetType:X2}, seq/flags=0x{sequenceOrFlags:X2}, shotId={shotId}, length={data.Length}");
+
       // Handle different packet types
       if (packetType == 0xFF && sequenceOrFlags == 0x00)
       {
@@ -145,6 +148,10 @@ namespace gspro_r10.bluetooth
           combinedData = paddedData;
         }
 
+        // DEBUG: Log raw bytes
+        BluetoothLogger.Info($"Raw Parser: Shot {buffer.ShotId} - Combined data length: {combinedData.Length} bytes");
+        BluetoothLogger.Info($"Raw Parser: Hex: {BitConverter.ToString(combinedData)}");
+
         int offset = 0;
 
         // Read all 9 int16 values first
@@ -157,6 +164,18 @@ namespace gspro_r10.bluetooth
         short val7 = ReadInt16(combinedData, ref offset);
         short val8 = ReadInt16(combinedData, ref offset);
         short val9 = ReadInt16(combinedData, ref offset);
+
+        // DEBUG: Log all raw values before conversion
+        BluetoothLogger.Info($"Raw Parser: RAW VALUES:");
+        BluetoothLogger.Info($"  val1 (BallSpeed)={val1} -> {val1/100.0f:F2}mph");
+        BluetoothLogger.Info($"  val2 (ClubPath)={val2} -> {val2/100.0f:F2}°");
+        BluetoothLogger.Info($"  val3 (LaunchDir)={val3} -> {-val3/100.0f:F2}° (negated)");
+        BluetoothLogger.Info($"  val4 (TotalSpin)={val4} rpm");
+        BluetoothLogger.Info($"  val5 (SpinAxis)={val5} -> {val5/100.0f:F2}°");
+        BluetoothLogger.Info($"  val6 (ClubSpeed)={val6} -> {val6/100.0f:F2}mph");
+        BluetoothLogger.Info($"  val7 (AttackAngle)={val7} -> {val7/100.0f:F2}°");
+        BluetoothLogger.Info($"  val8 (LaunchAngle)={val8} -> {val8/100.0f:F2}°");
+        BluetoothLogger.Info($"  val9 (ClubFace)={val9} -> {val9/100.0f:F2}°");
 
         // Log parsed values
         BluetoothLogger.Info($"Raw Parser: Ball={val1/100.0f:F1}mph, Club={val6/100.0f:F1}mph, LA={val8/100.0f:F1}°, LD={-val3/100.0f:F1}°, Spin={val4}rpm");
